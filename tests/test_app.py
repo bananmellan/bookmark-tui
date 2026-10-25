@@ -310,14 +310,28 @@ def test_selection_resets_when_query_changes(tmp_path):
 # ============================================================ detail view
 
 
-def test_enter_in_list_opens_detail_not_browser(tmp_path):
+def test_enter_in_list_opens_url_in_browser(tmp_path):
+    """Enter in the list raises OpenRequested (rofi-style: open and quit)."""
     app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
     app.start()
     app.handle_key("b")
     app.handle_key("a")
     app.handle_key("n")
     app.handle_key("k")
-    screen = app.handle_key("enter")
+    with pytest.raises(OpenRequested) as exc_info:
+        app.handle_key("enter")
+    assert exc_info.value.ref.title == "Bank"
+    assert exc_info.value.ref.url == "https://bank.example.com"
+
+
+def test_ctrl_o_in_list_opens_detail(tmp_path):
+    app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
+    app.start()
+    app.handle_key("b")
+    app.handle_key("a")
+    app.handle_key("n")
+    app.handle_key("k")
+    screen = app.handle_key("ctrl_o")
     assert isinstance(screen, DetailScreen)
     assert screen.ref.title == "Bank"
 
@@ -326,22 +340,21 @@ def test_detail_esc_returns_to_list(tmp_path):
     app = make_app(tmp_path, refs=[ref(1)])
     app.start()
     app.handle_key("g")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     assert isinstance(app.screen, DetailScreen)
     screen = app.handle_key("esc")
     assert isinstance(screen, ListScreen)
 
 
-def test_detail_enter_copies_url_and_quits(tmp_path):
-    clipboard = FakeClipboard()
-    app = make_app(tmp_path, clipboard=clipboard, refs=[ref(1, url="https://github.com")])
+def test_detail_enter_opens_url_in_browser(tmp_path):
+    app = make_app(tmp_path, refs=[ref(1, url="https://github.com")])
     app.start()
     app.handle_key("g")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     assert isinstance(app.screen, DetailScreen)
-    with pytest.raises(QuitRequested):
+    with pytest.raises(OpenRequested) as exc_info:
         app.handle_key("enter")
-    assert clipboard.written == ["https://github.com"]
+    assert exc_info.value.ref.url == "https://github.com"
 
 
 # ============================================================ add
@@ -446,7 +459,7 @@ def test_e_opens_edit_form(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("g")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     assert isinstance(screen, EditScreen)
     assert not screen.is_new
@@ -462,7 +475,7 @@ def test_edit_bookmark_flow(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("o")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     assert isinstance(screen, EditScreen)
 
@@ -490,7 +503,7 @@ def test_edit_cursor_movement(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     assert screen.cursor == len("https://example.com")
 
@@ -509,7 +522,7 @@ def test_edit_backspace(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     screen = app.handle_key("end")
     screen = app.handle_key("backspace")
@@ -522,7 +535,7 @@ def test_edit_insert_in_middle(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     screen = app.handle_key("home")
     for ch in "XX":
@@ -536,7 +549,7 @@ def test_edit_tab_navigates_fields(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     assert screen.field_idx == 0
     screen = app.handle_key("tab")
@@ -555,7 +568,7 @@ def test_edit_esc_cancels(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     screen = app.handle_key("esc")
     assert isinstance(screen, ListScreen)
@@ -570,7 +583,7 @@ def test_d_opens_confirm(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("d")
     assert isinstance(screen, ConfirmScreen)
     assert screen.action == "delete"
@@ -583,7 +596,7 @@ def test_delete_confirmed_with_y(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     screen = app.handle_key("y")
     assert isinstance(screen, ListScreen)
@@ -597,7 +610,7 @@ def test_delete_confirmed_with_enter(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
@@ -610,7 +623,7 @@ def test_delete_cancelled_with_n(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("k")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     screen = app.handle_key("n")
     assert isinstance(screen, ListScreen)
@@ -623,7 +636,7 @@ def test_delete_cancelled_with_esc(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("k")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     screen = app.handle_key("esc")
     assert isinstance(screen, ListScreen)
@@ -635,7 +648,7 @@ def test_delete_arrow_toggle(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("d")
     assert screen.selected == 0
     screen = app.handle_key("right")
@@ -676,7 +689,7 @@ def test_full_crud_cycle(tmp_path):
     screen = app.handle_key("r")
     screen = app.handle_key("u")
     screen = app.handle_key("d")
-    screen = app.handle_key("enter")
+    screen = app.handle_key("ctrl_o")
     assert isinstance(screen, DetailScreen)
     screen = app.handle_key("e")
     assert isinstance(screen, EditScreen)
@@ -703,7 +716,7 @@ def test_full_crud_cycle(tmp_path):
     screen = app.handle_key("t")
     screen = app.handle_key("e")
     screen = app.handle_key("d")
-    screen = app.handle_key("enter")
+    screen = app.handle_key("ctrl_o")
     assert isinstance(screen, DetailScreen)
     screen = app.handle_key("d")
     assert isinstance(screen, ConfirmScreen)
@@ -718,7 +731,7 @@ def test_add_from_detail_view(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("ctrl_a")
     assert isinstance(screen, EditScreen)
     assert screen.is_new
@@ -750,7 +763,7 @@ def test_backend_error_on_delete(tmp_path):
     app = make_app(tmp_path, client=client, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     screen = app.handle_key("y")
     assert isinstance(screen, ListScreen)

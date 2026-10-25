@@ -113,6 +113,7 @@ def test_key_name_emacs_bindings():
 
 def test_key_name_edit_bindings():
     assert tui._key_name(1) == "ctrl_a"  # Ctrl+a: add new
+    assert tui._key_name(15) == "ctrl_o"  # Ctrl+o: open detail view
     assert tui._key_name(19) == "ctrl_s"  # Ctrl+s: save
 
 
@@ -361,7 +362,7 @@ def test_draw_detail_shows_all_fields(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("g")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     win = StubWindow()
     tui._draw_detail(win, app)
     text = win.text()
@@ -370,7 +371,7 @@ def test_draw_detail_shows_all_fields(tmp_path):
     assert "dev, code" in text
     assert "Code hosting" in text
     assert "#1" in text
-    assert "enter: copy URL" in text
+    assert "enter: open URL" in text
     assert "e: edit" in text
     assert "d: delete" in text
 
@@ -380,7 +381,7 @@ def test_draw_detail_shows_message(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.screen.message = "Copy failed"
     win = StubWindow()
     tui._draw_detail(win, app)
@@ -409,7 +410,7 @@ def test_draw_edit_edit_form(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("e")
     win = StubWindow()
     tui._draw_edit(win, app)
@@ -423,7 +424,7 @@ def test_draw_edit_shows_values(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("m")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("e")
     win = StubWindow()
     tui._draw_edit(win, app)
@@ -439,7 +440,7 @@ def test_draw_edit_cursor_position(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("e")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     screen = app.handle_key("e")
     win = StubWindow()
     tui._draw_edit(win, app)
@@ -464,7 +465,7 @@ def test_draw_confirm_delete(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("d")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     win = StubWindow()
     tui._draw_confirm(win, app)
@@ -484,7 +485,7 @@ def test_draw_confirm_selected_highlight(tmp_path):
     app = make_app(tmp_path, refs=refs)
     app.start()
     app.handle_key("t")
-    app.handle_key("enter")
+    app.handle_key("ctrl_o")
     app.handle_key("d")
     win = StubWindow()
     tui._draw_confirm(win, app)
@@ -523,7 +524,7 @@ class FakeBackend:
     def list_all(self):
         return list(self.refs.values()), len(self.refs)
     def open(self, ref):
-        pass
+        Path(cache_dir / "opened.txt").write_text(ref.url)
     def add(self, url, title, tags, desc):
         idx = self._next
         self._next += 1
@@ -553,7 +554,9 @@ backend = FakeBackend()
 cache = Cache(cache_dir / CACHE_NAME, backend, ttl=config.cache_ttl)
 clip = Clip()
 app = App(config, cache, backend, clip)
-run(app)
+ref = run(app)
+if ref is not None:
+    backend.open(ref)
 """ % str(Path(__file__).resolve().parent.parent / "src")
 
 
@@ -597,22 +600,24 @@ def test_pty_quit_with_esc(tmp_path):
     assert rc == 0
 
 
-def test_pty_open_detail_and_back(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"g", b"\r", b"\x1b", b"\x1b"], [ref(1)])
+def test_pty_ctrl_o_opens_detail_and_back(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"g", b"\x0f", b"\x1b", b"\x1b"], [ref(1)])
     assert rc == 0
 
 
-def test_pty_type_to_filter_then_open(tmp_path):
-    refs = [ref(1), ref(2, "Bank", "https://bank.example.com")]
-    rc = _run_in_pty(tmp_path, [b"bank", b"\r", b"\x1b", b"\x1b"], refs)
+def test_pty_enter_opens_url_and_quits(tmp_path):
+    refs = [ref(1, "Bank", "https://bank.example.com")]
+    rc = _run_in_pty(tmp_path, [b"bank", b"\r"], refs)
     assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text()
+    assert opened == "https://bank.example.com"
 
 
-def test_pty_copy_url_and_quit(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"g", b"\r", b"\r"], [ref(1, url="https://github.com")])
+def test_pty_enter_opens_first_match_and_quits(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"g", b"\r"], [ref(1, url="https://github.com")])
     assert rc == 0
-    copied = (tmp_path / "cache" / "copied.txt").read_text()
-    assert copied == "https://github.com"
+    opened = (tmp_path / "cache" / "opened.txt").read_text()
+    assert opened == "https://github.com"
 
 
 def test_pty_esc_clears_query_then_quits(tmp_path):
@@ -622,7 +627,7 @@ def test_pty_esc_clears_query_then_quits(tmp_path):
 
 def test_pty_ctrl_n_moves_down(tmp_path):
     refs = [ref(1), ref(2, "Bank", "https://bank.example.com")]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b"], refs)
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x0f", b"\x1b", b"\x1b"], refs)
     assert rc == 0
 
 

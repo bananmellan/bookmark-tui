@@ -6,10 +6,11 @@ the edit/add form, and the delete confirmation. The controller never
 touches curses: it exposes the current screen as a plain dataclass plus
 a handle_key method that returns the next screen.
 
-Pressing enter on a bookmark in the list opens its detail view. From
-the detail view the user can copy the URL (enter, then quit), edit the
-bookmark (e), delete it (d), or add a new one (ctrl-a). The edit form
-supports full text editing within each field.
+Pressing enter on a bookmark in the list opens its URL in the browser
+(like rofi, one selection ends the run). Ctrl+o opens the detail view,
+from which the user can open the URL (enter), edit the bookmark (e),
+delete it (d), or add a new one (ctrl-a). The edit form supports full
+text editing within each field.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Callable
 
 from .bukucli import BukuCli, BukuCliError
 from .cache import Cache, match_host, sort_refs
-from .clipboard import Clipboard, ClipboardError, extract_host
+from .clipboard import Clipboard, extract_host
 from .config import Config
 from .models import BookmarkRef
 from .search import filter_bookmarks
@@ -249,14 +250,6 @@ class App:
         except BukuCliError as exc:
             return self._refresh_list(message=f"Delete failed: {exc}")
 
-    def _copy_url(self, ref: BookmarkRef) -> bool:
-        try:
-            self.clipboard.write(ref.url)
-            return True
-        except ClipboardError as exc:
-            self._log(f"copy failed: {exc}")
-            return False
-
     # ------------------------------------------------------------ launch
 
     def start(self) -> Screen:
@@ -334,6 +327,11 @@ class App:
             ref = screen.selected_ref
             if ref is None:
                 return screen
+            raise OpenRequested(ref)
+        if key == "ctrl_o":
+            ref = screen.selected_ref
+            if ref is None:
+                return screen
             return self._open_detail(ref)
         if key == "esc":
             if screen.query:
@@ -382,9 +380,7 @@ class App:
             return self._refresh_list(keep_query=True)
         if key == "enter":
             if screen.ref is not None:
-                if self._copy_url(screen.ref):
-                    raise QuitRequested
-                screen.message = "Copy failed"
+                raise OpenRequested(screen.ref)
             return screen
         if key == "e":
             if screen.ref is not None:

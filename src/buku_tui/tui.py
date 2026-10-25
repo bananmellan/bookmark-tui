@@ -5,11 +5,12 @@ keystrokes into the symbolic key names the App controller understands.
 All behavior lives in app.py; this module only draws.
 
 Key bindings:
-- enter: Return, Ctrl+m or Ctrl+j
+- enter: Return, Ctrl+m or Ctrl+j — open URL (in list/detail)
 - back/quit: Esc or Ctrl+l
 - up/down: arrow keys, Ctrl+p / Ctrl+n (emacs style)
 - left/right: arrow keys (cursor movement in edit form)
 - refresh: Ctrl+r; quit: Ctrl+c
+- details: Ctrl+o (in list)
 - add: Ctrl+a or Tab (in list)
 - edit: e (in detail); delete: d (in detail)
 - save: Ctrl+s or Enter on last field (in edit form)
@@ -110,6 +111,8 @@ def _key_name(ch: int) -> str:
         return "ctrl_r"
     if ch == 1:
         return "ctrl_a"  # Ctrl+a: add new
+    if ch == 15:
+        return "ctrl_o"  # Ctrl+o: open detail view
     if ch == 19:
         return "ctrl_s"  # Ctrl+s: save
     if 32 <= ch < 127:
@@ -215,7 +218,7 @@ def _draw_list(stdscr, app: App) -> None:
     status = f"{len(visible)}/{len(screen.refs)} bookmarks"
     if screen.message:
         status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: open  ctrl-a/tab: add  esc/ctrl-l: quit  ctrl-r: refresh"
+    status += "  \u00b7  enter: open URL  ctrl-o: details  ctrl-a/tab: add  esc/ctrl-l: quit  ctrl-r: refresh"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
@@ -257,7 +260,7 @@ def _draw_detail(stdscr, app: App) -> None:
 
     if screen.message:
         _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
-    status = "enter: copy URL  e: edit  d: delete  ctrl-a: add  esc/ctrl-l: back"
+    status = "enter: open URL  e: edit  d: delete  ctrl-a: add  esc/ctrl-l: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.refresh()
 

@@ -15,8 +15,10 @@ bookmarks with full editing. No GUI toolkit — just run it from a terminal.
   the **title** on the first line, the **url** on the second, and the
   **tags** on the third (url and tags indented). Lines are colored
   when the terminal supports colors.
-- Selecting a bookmark opens its **detail view** showing all fields:
-  URL, title, tags, description and index.
+- **Enter** opens the selected bookmark's URL in the browser and quits
+  (rofi-style: one selection ends the run). **Ctrl+o** opens the
+  **detail view** showing all fields: URL, title, tags, description
+  and index.
 - **Full editing** within the interface:
   - **Add**: `Ctrl+a` or `Tab` opens a blank edit form. Fill in URL,
     title, tags and description. Save with `Enter` on the last field
@@ -28,8 +30,9 @@ bookmarks with full editing. No GUI toolkit — just run it from a terminal.
     Cancel with `Esc`.
   - **Delete**: press `d` in the detail view, then confirm with `y` or
     `Enter`.
-- **Copy URL**: press `Enter` in the detail view to copy the
-  bookmark's URL to the clipboard and quit (like rofi).
+- **Open URL**: press `Enter` in the list or detail view to open the
+  bookmark's URL in the browser and quit (like rofi, one selection ends
+  the run).
 - Bookmarks are listed from a local cache
   (`$XDG_CACHE_HOME/buku-tui/bookmarks.v1.json`) containing only
   **index, title, url, tags and description**. Startup is fast: the
@@ -56,7 +59,7 @@ bookmarks with full editing. No GUI toolkit — just run it from a terminal.
 - Python >= 3.10 (standard library only — curses ships with CPython)
 - `buku`
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
-  (optional — without one, the clipboard URL matching and copy are
+  (optional — without one, the clipboard URL matching at launch is
   skipped)
 - A terminal with curses support
 
@@ -87,7 +90,9 @@ shell.
   character. Bookmarks show as three-line blocks: title, url, tags.
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection.
   Emacs-style binds also work: `Ctrl+n`/`Ctrl+p` move down/up.
-- `Enter` opens the selected bookmark's detail view.
+- `Enter` opens the selected bookmark's URL in the browser and quits
+  (rofi-style: one selection ends the run).
+- `Ctrl+o` opens the selected bookmark's **detail view**.
 - `Ctrl+a` or `Tab` opens the **add** form.
 - `Esc` (or `Ctrl+l`) first clears the search query, then quits.
 - `Ctrl+r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
@@ -100,7 +105,7 @@ shell.
 
 ### Detail view
 
-- `Enter` copies the URL to the clipboard and quits.
+- `Enter` opens the URL in the browser and quits.
 - `e` opens the **edit** form for this bookmark.
 - `d` opens the **delete** confirmation.
 - `Ctrl+a` opens the **add** form.
