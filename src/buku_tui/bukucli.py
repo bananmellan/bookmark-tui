@@ -216,7 +216,8 @@ class BukuCli:
         all tags in one call with `--tag` (no argument refreshes instead
         of clearing), so each existing tag is removed individually with
         `--tag - <tag>`. Title and description clear with the bare flag
-        (`--title` / `-c` with no argument).
+        (`--title` / `-c` with no argument). `--tacit` is passed on every
+        call to skip confirmation prompts that would block inside the TUI.
         """
         argv = [self.binary, "--nostdin", "-u", str(index)]
         if url:
@@ -229,9 +230,12 @@ class BukuCli:
             argv.extend(["-c", desc])
         else:
             argv.append("-c")
+        argv.append("--tacit")
         self._exec(argv)
         if tags:
-            self._exec([self.binary, "--nostdin", "-u", str(index), "--tag", ",".join(tags)])
+            self._exec(
+                [self.binary, "--nostdin", "-u", str(index), "--tag", ",".join(tags), "--tacit"]
+            )
         else:
             self._remove_all_tags(index)
         return True
@@ -256,7 +260,7 @@ class BukuCli:
                 continue
             for tag in raw.tags:
                 self._exec(
-                    [self.binary, "--nostdin", "-u", str(index), "--tag", "-", tag]
+                    [self.binary, "--nostdin", "-u", str(index), "--tag", "-", tag, "--tacit"]
                 )
             return
 

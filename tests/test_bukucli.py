@@ -279,10 +279,12 @@ def test_update_invokes_buku_with_correct_args():
     assert "New Title" in argv
     assert "-c" in argv
     assert "New desc" in argv
+    assert "--tacit" in argv
     # Second call: set tags
     tag_call = calls[1]
     assert "--tag" in tag_call
     assert "a,b" in tag_call
+    assert "--tacit" in tag_call
 
 
 def test_update_with_empty_fields_clears_them():
@@ -306,12 +308,16 @@ def test_update_with_empty_fields_clears_them():
     assert argv[title_idx + 1] == "-c"
     # -c with no value (clears desc)
     c_idx = argv.index("-c")
-    assert c_idx == len(argv) - 1
+    assert c_idx == len(argv) - 2  # -c is followed by --tacit
+    # --tacit is last
+    assert argv[-1] == "--tacit"
     # Then: list to find tags, then remove each tag
     tag_removals = [c for c in calls if "-" in c and "--tag" in c]
     assert len(tag_removals) == 2
     assert "old1" in tag_removals[0]
     assert "old2" in tag_removals[1]
+    assert "--tacit" in tag_removals[0]
+    assert "--tacit" in tag_removals[1]
 
 
 def test_update_with_tags_replaces_tagset():
@@ -327,10 +333,12 @@ def test_update_with_tags_replaces_tagset():
     argv = calls[0]
     assert "--title" in argv
     assert "T" in argv
+    assert "--tacit" in argv
     # Second call: set tags
     tag_call = calls[1]
     assert "--tag" in tag_call
     assert "new1,new2" in tag_call
+    assert "--tacit" in tag_call
     # No tag removal calls
     assert len(calls) == 2
 
