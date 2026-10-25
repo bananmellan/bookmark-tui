@@ -12,7 +12,6 @@ from .bukucli import BukuCli, BukuCliError
 from .cache import CACHE_NAME, Cache
 from .clipboard import Clipboard
 from .config import Config
-from .models import BookmarkRef
 
 
 def _debug_log(cache_dir: Path, message: str) -> None:
@@ -80,16 +79,9 @@ def run_tui(config: Config | None = None, env=None) -> int:
     app = build_app(config)
     app.cache.ensure_fresh_async(lambda _cache: _spawn_rebuild(config))
     try:
-        ref = run(app)
+        run(app)
     except KeyboardInterrupt:
         return 0
-    if ref is None:
-        return 0
-    try:
-        app.client.open(ref)
-    except BukuCliError as exc:
-        print(f"buku-tui: could not open {ref.url!r}: {exc}", file=sys.stderr)
-        return 1
     return 0
 
 

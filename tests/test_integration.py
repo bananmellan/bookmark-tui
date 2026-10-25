@@ -96,3 +96,87 @@ def test_open_bad_index_raises(buku_env):
     buku_env["cli"]("-a", "https://example.com", "test")
     with pytest.raises(BukuCliError):
         buku_env["client"].open(BookmarkRef(index=99, url="https://nope.example"))
+
+
+# ============================================================ CRUD integration
+
+
+def test_add_bookmark_against_real_buku(buku_env):
+    from buku_tui.bukucli import BukuCli
+
+    client = buku_env["client"]
+    idx = client.add("https://integration-test.example.com", "Integration Test", ["test", "integration"], "A test bookmark")
+    assert idx >= 1
+
+    refs, _ = client.list_all()
+    by_url = {r.url: r for r in refs}
+    assert "https://integration-test.example.com" in by_url
+    bm = by_url["https://integration-test.example.com"]
+    assert bm.title == "Integration Test"
+    assert set(bm.tags) == {"test", "integration"}
+    assert bm.description == "A test bookmark"
+
+
+def test_update_bookmark_against_real_buku(buku_env):
+    buku_env["cli"]("-a", "https://update-test.example.com", "oldtag", "--title", "Old Title")
+    refs, _ = buku_env["client"].list_all()
+    assert len(refs) == 1
+    idx = refs[0].index
+
+    buku_env["client"].update(idx, "https://updated.example.com", "New Title", ["newtag"], "New desc")
+
+    refs, _ = buku_env["client"].list_all()
+    assert len(refs) == 1
+    bm = refs[0]
+    assert bm.url == "https://updated.example.com"
+    assert bm.title == "New Title"
+    assert set(bm.tags) == {"newtag"}
+    assert bm.description == "New desc"
+
+
+def test_update_clear_fields_against_real_buku(buku_env):
+    buku_env["cli"]("-a", "https://clear-test.example.com", "tag1,tag2", "--title", "Has Title", "-c", "Has desc")
+    refs, _ = buku_env["client"].list_all()
+    idx = refs[0].index
+
+    # Clear title, tags, and description
+    buku_env["client"].update(idx, "https://clear-test.example.com", "", [], "")
+
+    refs, _ = buku_env["client"].list_all()
+    bm = refs[0]
+    assert bm.title == ""
+    assert bm.tags == ()
+    assert bm.description == ""
+
+
+def test_delete_bookmark_against_real_buku(buku_env):
+    buku_env["cli"]("-a", "https://delete-test.example.com", "--title", "To Delete")
+    refs, _ = buku_env["client"].list_all()
+    assert len(refs) == 1
+    idx = refs[0].index
+
+    buku_env["client"].delete(idx)
+
+    refs, _ = buku_env["client"].list_all()
+    assert len(refs) == 0
+
+
+def test_full_crud_against_real_buku(buku_env):
+    client = buku_env["client"]
+
+    # Add
+    idx = client.add("https://crud.example.com", "CRUD", ["test"], "desc")
+    refs, _ = client.list_all()
+    assert len(refs) == 1
+    assert refs[0].index == idx
+
+    # Update
+    client.update(idx, "https://crud2.example.com", "CRUD2", ["test2"], "desc2")
+    refs, _ = client.list_all()
+    assert refs[0].url == "https://crud2.example.com"
+    assert refs[0].title == "CRUD2"
+
+    # Delete
+    client.delete(idx)
+    refs, _ = client.list_all()
+    assert len(refs) == 0

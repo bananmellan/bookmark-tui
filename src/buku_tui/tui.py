@@ -1,17 +1,20 @@
 """Curses rendering layer for buku-tui.
 
-Thin: it renders :class:`~buku_tui.app.ListScreen` values and translates
+Thin: it renders screen dataclasses from app.py and translates
 keystrokes into the symbolic key names the App controller understands.
 All behavior lives in app.py; this module only draws.
 
-Key bindings (in addition to the arrow keys, page up/down, home/end):
+Key bindings:
+- enter: Return, Ctrl+m or Ctrl+j
+- back/quit: Esc or Ctrl+l
+- up/down: arrow keys, Ctrl+p / Ctrl+n (emacs style)
+- left/right: arrow keys (cursor movement in edit form)
+- refresh: Ctrl+r; quit: Ctrl+c
+- add: Ctrl+a or Tab (in list)
+- edit: e (in detail); delete: d (in detail)
+- save: Ctrl+s or Enter on last field (in edit form)
 
-- enter: ``Return``, ``Ctrl+m`` or ``Ctrl+j`` — open the bookmark
-- quit: ``Esc`` or ``Ctrl+l`` (Esc first clears the search query)
-- up/down: arrow keys, ``Ctrl+p`` / ``Ctrl+n`` (emacs style)
-- refresh: ``Ctrl+r``; quit: ``Ctrl+c``
-
-The list renders fixed-width columns (title, url, tags) so rows line up;
+The list renders three-line blocks (title, url, tags) so rows line up;
 columns are colored when the terminal supports colors.
 """
 
@@ -20,19 +23,28 @@ from __future__ import annotations
 import curses
 import locale
 
-from .app import App, OpenRequested, QuitRequested
+from .app import (
+    App,
+    ConfirmScreen,
+    DetailScreen,
+    EditScreen,
+    ListScreen,
+    OpenRequested,
+    QuitRequested,
+    EDIT_FIELDS,
+)
 from .models import BookmarkRef
 
-# Each bookmark renders as a three-line block: title, url, tags.
 _ITEM_HEIGHT = 3
-_LIST_TOP = 2  # first item row (below the header and the prompt)
+_LIST_TOP = 2
 _INDENT = "  "
 
-# Color pairs (initialized in _loop when the terminal supports colors).
 _PAIR_TITLE = 1
 _PAIR_URL = 2
 _PAIR_TAGS = 3
 _PAIR_PROMPT = 4
+_PAIR_DIM = 5
+_PAIR_SELECTED = 6
 _COLORS_READY = False
 
 
@@ -52,11 +64,12 @@ def _init_colors() -> None:
     curses.init_pair(_PAIR_URL, curses.COLOR_BLUE, bg)
     curses.init_pair(_PAIR_TAGS, curses.COLOR_MAGENTA, bg)
     curses.init_pair(_PAIR_PROMPT, curses.COLOR_YELLOW, bg)
+    curses.init_pair(_PAIR_DIM, curses.COLOR_CYAN, bg)
+    curses.init_pair(_PAIR_SELECTED, curses.COLOR_GREEN, bg)
     _COLORS_READY = True
 
 
 def _pair(n: int) -> int:
-    """Color-pair attribute, or 0 when colors are unavailable (tests)."""
     return curses.color_pair(n) if _COLORS_READY else 0
 
 
@@ -65,6 +78,10 @@ def _key_name(ch: int) -> str:
         return "up"
     if ch == curses.KEY_DOWN:
         return "down"
+    if ch == curses.KEY_LEFT:
+        return "left"
+    if ch == curses.KEY_RIGHT:
+        return "right"
     if ch == curses.KEY_PPAGE:
         return "pageup"
     if ch == curses.KEY_NPAGE:
@@ -74,7 +91,6 @@ def _key_name(ch: int) -> str:
     if ch == curses.KEY_END:
         return "end"
     if ch in (10, 13, curses.KEY_ENTER):
-        # 10 = Ctrl+j (line feed), 13 = Ctrl+m (carriage return)
         return "enter"
     if ch == 27:
         return "esc"
@@ -92,6 +108,10 @@ def _key_name(ch: int) -> str:
         return "up"  # Ctrl+p
     if ch == 18:
         return "ctrl_r"
+    if ch == 1:
+        return "ctrl_a"  # Ctrl+a: add new
+    if ch == 19:
+        return "ctrl_s"  # Ctrl+s: save
     if 32 <= ch < 127:
         return chr(ch)
     if 0 < ch < 32:
@@ -100,27 +120,13 @@ def _key_name(ch: int) -> str:
 
 
 def _read_key(stdscr) -> str:
-    """Read one key, reassembling multibyte UTF-8 input.
-
-    curses' getch() returns one byte at a time for non-ASCII input, so
-    a character like 'å' (0xC3 0xA5) arrives as two key events. Collect
-    the continuation bytes of a UTF-8 sequence and decode the whole
-    character before handing it to the controller, so search accepts
-    å/ä/ö and any other non-ASCII text.
-
-    A timeout window (set on the window) bounds every read: -1 means
-    "nothing arrived in time", a lone 27 is the Esc key (the escape
-    timeout expired with no sequence bytes), and anything else is either
-    a special key (arrows etc., already decoded by keypad mode) or the
-    start of a UTF-8 sequence.
-    """
+    """Read one key, reassembling multibyte UTF-8 input."""
     ch = stdscr.getch()
     if ch == -1:
-        return ""  # timeout: nothing pressed
+        return ""
     if not (128 <= ch < 256):
         return _key_name(ch)
     raw = bytearray([ch])
-    # A UTF-8 lead byte says how many continuation bytes follow.
     if ch & 0xE0 == 0xC0:
         needed = 1
     elif ch & 0xF0 == 0xE0:
@@ -128,11 +134,11 @@ def _read_key(stdscr) -> str:
     elif ch & 0xF8 == 0xF0:
         needed = 3
     else:
-        return ""  # stray continuation byte: ignore
+        return ""
     for _ in range(needed):
         nxt = stdscr.getch()
         if nxt == -1 or not (128 <= nxt < 256) or nxt & 0xC0 != 0x80:
-            return ""  # malformed or interrupted sequence: drop it
+            return ""
         raw.append(nxt)
     try:
         return raw.decode("utf-8")
@@ -151,12 +157,7 @@ def _truncate(text: str, width: int) -> str:
 
 
 def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
-    """Write text at (y, x), clipped to the screen edge.
-
-    Writing into the bottom-right cell raises curses.error on most
-    terminals (the cursor cannot advance past it), so the clip keeps one
-    cell of margin on the last row.
-    """
+    """Write text at (y, x), clipped to the screen edge."""
     height, width = stdscr.getmaxyx()
     if y < 0 or y >= height or x >= width - 1:
         return
@@ -170,6 +171,7 @@ def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
 
 def _draw_list(stdscr, app: App) -> None:
     screen = app.screen
+    assert isinstance(screen, ListScreen)
     height, width = stdscr.getmaxyx()
     list_height = max(1, (height - 1 - _LIST_TOP) // _ITEM_HEIGHT)
     app._clamp(screen, list_height)
@@ -207,23 +209,134 @@ def _draw_list(stdscr, app: App) -> None:
             _put(stdscr, y + 2, 0, " " * min(avail, width - 1), base)
 
     if not screen.query.strip():
-        hint = "type to search bookmarks"
+        hint = "type to search bookmarks  \u00b7  ctrl-a: add"
         _put(stdscr, _LIST_TOP, 0, _truncate(hint, width - 1), curses.A_DIM)
 
     status = f"{len(visible)}/{len(screen.refs)} bookmarks"
     if screen.message:
         status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: open  esc/ctrl-l: quit  ctrl-r: refresh"
+    status += "  \u00b7  enter: open  ctrl-a/tab: add  esc/ctrl-l: quit  ctrl-r: refresh"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.move(1, min(2 + len(screen.query), width - 1))
+    stdscr.refresh()
+
+
+def _draw_detail(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, DetailScreen)
+    height, width = stdscr.getmaxyx()
+    ref = screen.ref
+
+    stdscr.erase()
+    if ref is not None:
+        title = ref.title or ref.url
+        _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
+    else:
+        _put(stdscr, 0, 0, "Bookmark", curses.A_BOLD)
+
+    if ref is None:
+        _put(stdscr, height - 1, 0, "esc: back", curses.A_DIM)
+        stdscr.refresh()
+        return
+
+    y = 2
+    fields = [
+        ("URL", ref.url),
+        ("Title", ref.title or "(none)"),
+        ("Tags", ", ".join(ref.tags) if ref.tags else "(none)"),
+        ("Desc", ref.description or "(none)"),
+        ("Index", f"#{ref.index}"),
+    ]
+    label_w = max(len(label) for label, _ in fields)
+    for label, value in fields:
+        _put(stdscr, y, 0, label.ljust(label_w), curses.A_BOLD | _pair(_PAIR_TAGS))
+        _put(stdscr, y, label_w + 2, _truncate(value, width - label_w - 3), _pair(_PAIR_TITLE))
+        y += 1
+        if y >= height - 2:
+            break
+
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+    status = "enter: copy URL  e: edit  d: delete  ctrl-a: add  esc/ctrl-l: back"
+    _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+    stdscr.refresh()
+
+
+_FIELD_LABELS = {
+    "url": "URL",
+    "title": "Title",
+    "tags": "Tags",
+    "desc": "Description",
+}
+
+
+def _draw_edit(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    height, width = stdscr.getmaxyx()
+    app._clamp(screen, height)
+
+    stdscr.erase()
+    header = "Edit bookmark" if not screen.is_new else "Add bookmark"
+    _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
+
+    y = 2
+    label_w = max(len(_FIELD_LABELS[f]) for f in EDIT_FIELDS)
+    for i, field_name in enumerate(EDIT_FIELDS):
+        label = _FIELD_LABELS[field_name]
+        value = screen.values.get(field_name, "")
+        is_current = i == screen.field_idx
+        base = curses.A_REVERSE if is_current else curses.A_NORMAL
+
+        _put(stdscr, y, 0, label.ljust(label_w), base | curses.A_BOLD | _pair(_PAIR_TAGS))
+        _put(stdscr, y, label_w + 2, _truncate(value, width - label_w - 3), base | _pair(_PAIR_TITLE))
+        y += 1
+        if y >= height - 3:
+            break
+
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+
+    is_last = screen.field_idx == len(EDIT_FIELDS) - 1
+    if is_last:
+        status = "enter/ctrl-s: save  esc: cancel  \u2191\u2193: navigate"
+    else:
+        status = "enter/tab: next  \u2191\u2193: navigate  esc: cancel"
+    _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+
+    value = screen.current_value
+    cursor_x = label_w + 2 + screen.cursor
+    stdscr.move(2 + screen.field_idx, min(cursor_x, width - 1))
+    stdscr.refresh()
+
+
+def _draw_confirm(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, ConfirmScreen)
+    height, width = stdscr.getmaxyx()
+
+    stdscr.erase()
+    if screen.ref is not None:
+        title = screen.ref.title or screen.ref.url
+        _put(stdscr, 0, 0, _truncate(f"Delete: {title}", width - 1), curses.A_BOLD)
+        _put(stdscr, 1, 0, _truncate(screen.ref.url, width - 1), _pair(_PAIR_URL))
+
+    _put(stdscr, 3, 0, _truncate("Are you sure? (y/n)", width - 1), _pair(_PAIR_PROMPT))
+
+    yes_attr = curses.A_REVERSE if screen.selected == 0 else curses.A_NORMAL
+    no_attr = curses.A_REVERSE if screen.selected == 1 else curses.A_NORMAL
+    _put(stdscr, 5, 4, " Yes ", yes_attr | _pair(_PAIR_SELECTED))
+    _put(stdscr, 5, 12, " No ", no_attr)
+
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+    _put(stdscr, height - 1, 0, _truncate("enter/y: confirm  n/esc: cancel  \u2190\u2192: select", width - 1), curses.A_DIM)
     stdscr.refresh()
 
 
 def run(app: App) -> BookmarkRef | None:
     """Run the curses event loop. Returns the bookmark to open, or None
     when the user quit without selecting."""
-    # curses only renders and reads non-ASCII text correctly when the
-    # C locale is set to the user's UTF-8 locale.
     locale.setlocale(locale.LC_ALL, "")
     app.start()
     return curses.wrapper(_loop, app)
@@ -232,14 +345,18 @@ def run(app: App) -> BookmarkRef | None:
 def _loop(stdscr, app: App) -> BookmarkRef | None:
     curses.curs_set(1)
     stdscr.keypad(True)
-    # A short escape timeout disambiguates a lone Esc keypress from an
-    # escape sequence (arrow keys etc.): with keypad(True) curses waits
-    # for the rest of a sequence, but a lone Esc must be delivered
-    # promptly so the user can quit.
     stdscr.timeout(80)
     _init_colors()
     while True:
-        _draw_list(stdscr, app)
+        screen = app.screen
+        if isinstance(screen, ListScreen):
+            _draw_list(stdscr, app)
+        elif isinstance(screen, DetailScreen):
+            _draw_detail(stdscr, app)
+        elif isinstance(screen, EditScreen):
+            _draw_edit(stdscr, app)
+        elif isinstance(screen, ConfirmScreen):
+            _draw_confirm(stdscr, app)
         try:
             name = _read_key(stdscr)
         except KeyboardInterrupt:

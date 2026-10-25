@@ -1,7 +1,7 @@
 # buku-tui
 
 A fast, rofi-like **terminal UI** for [buku](https://github.com/jarun/buku)
-bookmarks. No GUI toolkit — just run it from a terminal.
+bookmarks with full editing. No GUI toolkit — just run it from a terminal.
 
 ## Features
 
@@ -15,15 +15,28 @@ bookmarks. No GUI toolkit — just run it from a terminal.
   the **title** on the first line, the **url** on the second, and the
   **tags** on the third (url and tags indented). Lines are colored
   when the terminal supports colors.
-- Pressing `Enter` on a bookmark opens its URL in the browser (via
-  `buku -o <index>`, so your `BROWSER` / `xdg-open` setup is honored)
-  and **quits the program** — like rofi, one selection ends the run.
+- Selecting a bookmark opens its **detail view** showing all fields:
+  URL, title, tags, description and index.
+- **Full editing** within the interface:
+  - **Add**: `Ctrl+a` or `Tab` opens a blank edit form. Fill in URL,
+    title, tags and description. Save with `Enter` on the last field
+    or `Ctrl+s`.
+  - **Edit**: press `e` in the detail view to edit any bookmark's
+    fields. Navigate between fields with `↑`/`↓` or `Tab`/`Enter`.
+    Move the cursor with `←`/`→`, `Home`/`End`. Delete with
+    `Backspace`. Save with `Enter` on the last field or `Ctrl+s`.
+    Cancel with `Esc`.
+  - **Delete**: press `d` in the detail view, then confirm with `y` or
+    `Enter`.
+- **Copy URL**: press `Enter` in the detail view to copy the
+  bookmark's URL to the clipboard and quit (like rofi).
 - Bookmarks are listed from a local cache
   (`$XDG_CACHE_HOME/buku-tui/bookmarks.v1.json`) containing only
   **index, title, url, tags and description**. Startup is fast: the
   list renders straight from the cache; when the cache is older than
   `BUKU_TUI_CACHE_TTL` seconds (default 600) a background rebuild is
-  spawned without blocking the UI.
+  spawned without blocking the UI. The cache is invalidated after
+  every add/edit/delete so the list is always current.
 - If the clipboard contains an `http(s)://` URL or a bare hostname
   (`wl-paste`, `xclip` or `xsel`), bookmarks whose url contains the
   clipboard hostname (fuzzy: path, query, trailing slashes and case are
@@ -42,8 +55,9 @@ bookmarks. No GUI toolkit — just run it from a terminal.
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
 - `buku`
-- `wl-paste`/`xclip`/`xsel` for clipboard integration (optional — without
-  one, the clipboard URL matching is skipped)
+- `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
+  (optional — without one, the clipboard URL matching and copy are
+  skipped)
 - A terminal with curses support
 
 ## Install
@@ -65,22 +79,49 @@ shell.
 
 ## Usage
 
+### List view
+
 - Type to search bookmarks (matches on title, url, tags and description;
   substring first, then fuzzy subsequence for tokens of 3+ characters).
   The list only appears once the search field has at least one
   character. Bookmarks show as three-line blocks: title, url, tags.
-- `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter`
-  opens the selected bookmark in the browser and quits. Emacs-style
-  binds also work: `Ctrl+n`/`Ctrl+p` move down/up, `Ctrl+m` (or
-  `Ctrl+j`) is enter, `Ctrl+l` is quit.
+- `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection.
+  Emacs-style binds also work: `Ctrl+n`/`Ctrl+p` move down/up.
+- `Enter` opens the selected bookmark's detail view.
+- `Ctrl+a` or `Tab` opens the **add** form.
+- `Esc` (or `Ctrl+l`) first clears the search query, then quits.
+- `Ctrl+r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
 - When the clipboard holds a URL, the matching bookmarks are listed with
   the host prefilled as the query (the prefilled host counts as search
   input, so matches show immediately). Host-like queries match precisely
   (substring only — no fuzzy subsequence), so unrelated bookmarks never
   appear; once you edit the query past the host, normal fuzzy matching
   resumes.
-- `Esc` first clears the search query, then quits.
-- `Ctrl-r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
+
+### Detail view
+
+- `Enter` copies the URL to the clipboard and quits.
+- `e` opens the **edit** form for this bookmark.
+- `d` opens the **delete** confirmation.
+- `Ctrl+a` opens the **add** form.
+- `Esc` (or `Ctrl+l`) goes back to the list.
+
+### Edit / Add form
+
+- `↑`/`↓` or `Tab` moves between fields (URL → Title → Tags →
+  Description).
+- `Enter` on the last field (Description) saves. `Ctrl+s` saves from
+  any field.
+- `←`/`→`, `Home`/`End` move the cursor within a field.
+- `Backspace` deletes the character before the cursor.
+- `Esc` cancels and returns to the list.
+- Tags are comma-separated (e.g. `python, tutorial, cli`).
+
+### Delete confirmation
+
+- `y` or `Enter` confirms deletion.
+- `n` or `Esc` cancels.
+- `←`/`→` toggles between Yes and No.
 
 ### Configuration (environment variables)
 
@@ -110,13 +151,13 @@ Layout:
 bin/buku-tui             launcher for running from a checkout
 src/buku_tui/
   cli.py                 entry point: arg parsing, --rebuild, tty check
-  app.py                 UI-agnostic controller (list screen + key handling)
-  tui.py                 curses rendering (three-line rows) and key translation
+  app.py                 UI-agnostic controller (list/detail/edit/confirm screens + key handling)
+  tui.py                 curses rendering (list, detail, edit, confirm) and key translation
   search.py              live filtering (token substring/subsequence ranking)
-  bukucli.py             buku subprocess wrapper + JSON parsing + open
+  bukucli.py             buku subprocess wrapper: list, open, add, update, delete
   cache.py               metadata cache (atomic, 0600, TTL, background refresh)
   clipboard.py           wl-clipboard/xclip/xsel abstraction, URL host extraction
   config.py              environment-based configuration
   models.py              BookmarkRef dataclass
-tests/                   pytest suite (app controller, search, tui, pty smoke)
+tests/                   pytest suite (app controller, bukucli, search, tui, pty smoke, integration)
 ```
