@@ -1,0 +1,383 @@
+"""UI-agnostic controller for bookmark-tui.
+
+Owns the whole interaction state machine: the bookmark list (with live
+filter), the detail view, the edit/add form, and the delete
+confirmation. The controller never touches curses: it exposes the
+current screen as a plain dataclass plus a handle_key method that
+returns the next screen.
+
+Key bindings:
+- Enter opens the selected bookmark's URL in the browser and quits
+  (rofi-style: one selection ends the run).
+- Ctrl+o opens the detail view for the selected bookmark.
+- Ctrl+a or Tab opens the add form.
+- e (in detail) opens the edit form.
+- d (in detail) opens the delete confirmation.
+- Esc goes back (or quits from the list when the query is empty).
+- The search query persists across screens within a run.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass, field
+
+from .models import Bookmark
+from .search import filter_bookmarks
+from .storage import BookmarkStore
+
+STAGE_LIST = "list"
+STAGE_DETAIL = "detail"
+STAGE_EDIT = "edit"
+STAGE_CONFIRM = "confirm"
+
+EDIT_FIELDS = ["url", "title", "category"]
+
+
+@dataclass
+class ListScreen:
+    stage: str = STAGE_LIST
+    bookmarks: list[Bookmark] = field(default_factory=list)
+    query: str = ""
+    selected: int = 0
+    offset: int = 0
+    message: str = ""
+
+    @property
+    def visible(self) -> list[Bookmark]:
+        if not self.query.strip():
+            return []
+        return filter_bookmarks(self.bookmarks, self.query)
+
+    @property
+    def selected_bookmark(self) -> Bookmark | None:
+        visible = self.visible
+        if 0 <= self.selected < len(visible):
+            return visible[self.selected]
+        return None
+
+
+@dataclass
+class DetailScreen:
+    stage: str = STAGE_DETAIL
+    bookmark: Bookmark | None = None
+    list_query: str = ""
+    list_selected: int = 0
+    message: str = ""
+
+
+@dataclass
+class EditScreen:
+    stage: str = STAGE_EDIT
+    editing_id: int | None = None
+    field_idx: int = 0
+    values: dict[str, str] = field(default_factory=dict)
+    cursor: int = 0
+    list_query: str = ""
+    list_selected: int = 0
+    message: str = ""
+
+    @property
+    def current_field(self) -> str:
+        return EDIT_FIELDS[self.field_idx]
+
+    @property
+    def current_value(self) -> str:
+        return self.values.get(self.current_field, "")
+
+    @property
+    def is_new(self) -> bool:
+        return self.editing_id is None
+
+
+@dataclass
+class ConfirmScreen:
+    stage: str = STAGE_CONFIRM
+    bookmark: Bookmark | None = None
+    selected: int = 0
+    list_query: str = ""
+    list_selected: int = 0
+    message: str = ""
+
+
+Screen = ListScreen | DetailScreen | EditScreen | ConfirmScreen
+
+
+class OpenRequested(Exception):
+    """Raised when the user picks a bookmark to open in the browser."""
+
+    def __init__(self, bookmark: Bookmark) -> None:
+        super().__init__(bookmark.url)
+        self.bookmark = bookmark
+
+
+class QuitRequested(Exception):
+    """Raised by App.handle_key when the user asks to quit."""
+
+
+class App:
+    def __init__(self, store: BookmarkStore, open_url=None) -> None:
+        self.store = store
+        self._open_url = open_url or _default_open_url
+        self.screen: Screen = ListScreen()
+
+    # ------------------------------------------------------------ helpers
+
+    def _list_screen(
+        self,
+        query: str = "",
+        selected: int = 0,
+        message: str = "",
+    ) -> ListScreen:
+        screen = ListScreen(
+            bookmarks=self.store.all,
+            query=query,
+            selected=selected,
+            message=message,
+        )
+        self.screen = screen
+        return screen
+
+    def _detail_screen(self, bm: Bookmark, list_query: str = "", list_selected: int = 0) -> DetailScreen:
+        screen = DetailScreen(bookmark=bm, list_query=list_query, list_selected=list_selected)
+        self.screen = screen
+        return screen
+
+    def _start_edit(self, bm: Bookmark | None, list_query: str = "", list_selected: int = 0) -> EditScreen:
+        if bm is None:
+            values = {"url": "", "title": "", "category": ""}
+            screen = EditScreen(editing_id=None, values=values, cursor=0,
+                                list_query=list_query, list_selected=list_selected)
+        else:
+            values = {"url": bm.url, "title": bm.title, "category": bm.category}
+            screen = EditScreen(editing_id=bm.id, values=values, cursor=len(values["url"]),
+                                list_query=list_query, list_selected=list_selected)
+        self.screen = screen
+        return screen
+
+    def _save_edit(self) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, EditScreen)
+        url = screen.values["url"].strip()
+        title = screen.values["title"].strip()
+        category = screen.values["category"].strip()
+        if not url:
+            screen.message = "URL is required"
+            return screen
+        if screen.is_new:
+            bm = self.store.add(url, title, category)
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected,
+                                     message=f"Added: {title or url}")
+        else:
+            self.store.update(screen.editing_id, url, title, category)
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected,
+                                     message=f"Updated: {title or url}")
+
+    def _confirm_delete(self, bm: Bookmark, list_query: str = "", list_selected: int = 0) -> ConfirmScreen:
+        screen = ConfirmScreen(bookmark=bm, list_query=list_query, list_selected=list_selected)
+        self.screen = screen
+        return screen
+
+    def _do_delete(self) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, ConfirmScreen)
+        if screen.bookmark is None:
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+        bm = screen.bookmark
+        self.store.delete(bm.id)
+        return self._list_screen(query=screen.list_query, selected=screen.list_selected,
+                                 message=f"Deleted: {bm.title or bm.url}")
+
+    # ------------------------------------------------------------ launch
+
+    def start(self) -> Screen:
+        return self._list_screen()
+
+    # ------------------------------------------------------------ keys
+
+    def handle_key(self, key: str) -> Screen:
+        if key == "ctrl_c":
+            raise QuitRequested
+        screen = self.screen
+        if isinstance(screen, ListScreen):
+            return self._handle_list_key(key)
+        if isinstance(screen, DetailScreen):
+            return self._handle_detail_key(key)
+        if isinstance(screen, EditScreen):
+            return self._handle_edit_key(key)
+        if isinstance(screen, ConfirmScreen):
+            return self._handle_confirm_key(key)
+        return screen
+
+    def _clamp(self, screen: Screen, height: int) -> None:
+        if isinstance(screen, ListScreen):
+            visible = screen.visible
+            if screen.selected >= len(visible):
+                screen.selected = max(0, len(visible) - 1)
+            if screen.selected < 0:
+                screen.selected = 0
+            if height > 0:
+                if screen.selected < screen.offset:
+                    screen.offset = screen.selected
+                elif screen.selected >= screen.offset + height:
+                    screen.offset = screen.selected - height + 1
+        elif isinstance(screen, EditScreen):
+            if screen.field_idx >= len(EDIT_FIELDS):
+                screen.field_idx = len(EDIT_FIELDS) - 1
+            if screen.field_idx < 0:
+                screen.field_idx = 0
+            value = screen.current_value
+            if screen.cursor > len(value):
+                screen.cursor = len(value)
+            if screen.cursor < 0:
+                screen.cursor = 0
+
+    def _handle_list_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, ListScreen)
+        visible = screen.visible
+        if key == "enter":
+            bm = screen.selected_bookmark
+            if bm is None:
+                return screen
+            raise OpenRequested(bm)
+        if key == "ctrl_o":
+            bm = screen.selected_bookmark
+            if bm is None:
+                return screen
+            return self._detail_screen(bm, list_query=screen.query, list_selected=screen.selected)
+        if key == "esc":
+            if screen.query:
+                screen.query = ""
+                screen.selected = 0
+                screen.offset = 0
+                return screen
+            raise QuitRequested
+        if key == "up":
+            screen.selected = max(0, screen.selected - 1)
+            return screen
+        if key == "down":
+            screen.selected = min(max(0, len(visible) - 1), screen.selected + 1)
+            return screen
+        if key == "pageup":
+            screen.selected = max(0, screen.selected - 10)
+            return screen
+        if key == "pagedown":
+            screen.selected = min(max(0, len(visible) - 1), screen.selected + 10)
+            return screen
+        if key == "home":
+            screen.selected = 0
+            return screen
+        if key == "end":
+            screen.selected = max(0, len(visible) - 1)
+            return screen
+        if key == "backspace":
+            if screen.query:
+                screen.query = screen.query[:-1]
+                screen.selected = 0
+                screen.offset = 0
+            return screen
+        if key == "ctrl_a" or key == "tab":
+            return self._start_edit(None, list_query=screen.query, list_selected=screen.selected)
+        if len(key) == 1 and key.isprintable():
+            screen.query += key
+            screen.selected = 0
+            screen.offset = 0
+            return screen
+        return screen
+
+    def _handle_detail_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, DetailScreen)
+        if key == "esc":
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+        if key == "enter":
+            if screen.bookmark is not None:
+                raise OpenRequested(screen.bookmark)
+            return screen
+        if key == "e":
+            if screen.bookmark is not None:
+                return self._start_edit(screen.bookmark,
+                                        list_query=screen.list_query,
+                                        list_selected=screen.list_selected)
+            return screen
+        if key == "d":
+            if screen.bookmark is not None:
+                return self._confirm_delete(screen.bookmark,
+                                            list_query=screen.list_query,
+                                            list_selected=screen.list_selected)
+            return screen
+        if key == "ctrl_a":
+            return self._start_edit(None, list_query=screen.list_query, list_selected=screen.list_selected)
+        return screen
+
+    def _handle_edit_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, EditScreen)
+        if key == "esc":
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+        if key == "up":
+            if screen.field_idx > 0:
+                screen.field_idx -= 1
+                screen.cursor = len(screen.current_value)
+            return screen
+        if key in ("down", "tab", "enter"):
+            if screen.field_idx < len(EDIT_FIELDS) - 1:
+                screen.field_idx += 1
+                screen.cursor = len(screen.current_value)
+            else:
+                return self._save_edit()
+            return screen
+        if key == "backspace":
+            value = screen.current_value
+            if screen.cursor > 0:
+                new_value = value[: screen.cursor - 1] + value[screen.cursor:]
+                screen.values[screen.current_field] = new_value
+                screen.cursor -= 1
+            return screen
+        if key == "left":
+            screen.cursor = max(0, screen.cursor - 1)
+            return screen
+        if key == "right":
+            screen.cursor = min(len(screen.current_value), screen.cursor + 1)
+            return screen
+        if key == "home":
+            screen.cursor = 0
+            return screen
+        if key == "end":
+            screen.cursor = len(screen.current_value)
+            return screen
+        if key == "ctrl_s":
+            return self._save_edit()
+        if len(key) == 1 and key.isprintable():
+            value = screen.current_value
+            screen.values[screen.current_field] = value[:screen.cursor] + key + value[screen.cursor:]
+            screen.cursor += 1
+            return screen
+        return screen
+
+    def _handle_confirm_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, ConfirmScreen)
+        if key in ("y", "enter"):
+            return self._do_delete()
+        if key in ("n", "esc"):
+            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+        if key == "left":
+            screen.selected = 0
+            return screen
+        if key == "right":
+            screen.selected = 1
+            return screen
+        return screen
+
+
+def _default_open_url(url: str) -> None:
+    """Open a URL in the default browser."""
+    import sys
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif sys.platform == "win32":
+        subprocess.Popen(["cmd", "/c", "start", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

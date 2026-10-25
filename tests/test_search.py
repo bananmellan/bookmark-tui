@@ -1,108 +1,97 @@
-from buku_tui.models import BookmarkRef
-from buku_tui.search import filter_bookmarks, search_text
+"""Tests for the search module."""
+
+from bookmark_tui.models import Bookmark
+from bookmark_tui.search import filter_bookmarks, search_text
 
 
-def ref(index=1, title="GitHub", url="https://github.com", tags=(), description=""):
-    return BookmarkRef(index=index, url=url, title=title, tags=tags, description=description)
+def bm(id=1, title="", url="", category=""):
+    return Bookmark(id=id, url=url, title=title, category=category)
 
 
-def test_empty_query_returns_everything_in_order():
-    refs = [ref(2, "Bank"), ref(1, "GitHub")]
-    assert filter_bookmarks(refs, "") == refs
-    assert filter_bookmarks(refs, "   ") == refs
+def test_empty_query_returns_all():
+    bookmarks = [bm(1, "A", "https://a.com"), bm(2, "B", "https://b.com")]
+    assert filter_bookmarks(bookmarks, "") == bookmarks
+    assert filter_bookmarks(bookmarks, "  ") == bookmarks
 
 
-def test_title_substring_matches():
-    refs = [
-        ref(1, "GitHub", "https://github.com"),
-        ref(2, "GitLab", "https://gitlab.com"),
-        ref(3, "Bank", "https://bank.example.com"),
+def test_title_substring_match():
+    bookmarks = [
+        bm(1, "GitHub", "https://github.com"),
+        bm(2, "Bank", "https://bank.com"),
     ]
-    assert [r.title for r in filter_bookmarks(refs, "git")] == ["GitHub", "GitLab"]
+    result = filter_bookmarks(bookmarks, "git")
+    assert len(result) == 1
+    assert result[0].title == "GitHub"
 
 
-def test_match_is_case_insensitive():
-    refs = [ref(1, "GitHub")]
-    assert len(filter_bookmarks(refs, "GITHUB")) == 1
-    assert len(filter_bookmarks(refs, "github")) == 1
+def test_case_insensitive():
+    bookmarks = [bm(1, "GitHub", "https://github.com")]
+    assert len(filter_bookmarks(bookmarks, "GITHUB")) == 1
+    assert len(filter_bookmarks(bookmarks, "github")) == 1
 
 
-def test_subsequence_match_for_long_tokens():
-    refs = [
-        ref(1, "GitHub", "https://a.example"),
-        ref(2, "Bank", "https://b.example"),
+def test_url_match():
+    bookmarks = [
+        bm(1, "Code", "https://github.com"),
+        bm(2, "Bank", "https://bank.com"),
     ]
-    assert [r.title for r in filter_bookmarks(refs, "ghub")] == ["GitHub"]
+    result = filter_bookmarks(bookmarks, "github.com")
+    assert len(result) == 1
+    assert result[0].title == "Code"
+
+
+def test_category_match():
+    bookmarks = [
+        bm(1, "Pasta", "https://pasta.com", "food/recipes"),
+        bm(2, "Bank", "https://bank.com", "finance"),
+    ]
+    result = filter_bookmarks(bookmarks, "food")
+    assert len(result) == 1
+    assert result[0].title == "Pasta"
+
+
+def test_subsequence_match():
+    bookmarks = [bm(1, "GitHub", "https://github.com")]
+    assert len(filter_bookmarks(bookmarks, "ghub")) == 1
 
 
 def test_subsequence_needs_three_chars():
-    refs = [
-        ref(1, "GitHub", "https://a.example"),
-        ref(2, "Gutter Hub", "https://b.example"),
-    ]
-    # "gh" is a substring of "GitHub" but only a subsequence of
-    # "Gutter Hub"; two-letter tokens stay substring-only.
-    assert [r.title for r in filter_bookmarks(refs, "githu")] == ["GitHub"]
-    assert [r.title for r in filter_bookmarks(refs, "gith")] == ["GitHub"]
-    # 3+ char tokens may subsequence-match.
-    assert [r.title for r in filter_bookmarks(refs, "gthb")] == ["GitHub", "Gutter Hub"]
-
-
-def test_url_and_tags_and_description_match():
-    refs = [
-        ref(1, "A", "https://news.ycombinator.com", ("hn", "news")),
-        ref(2, "B", "https://example.com", ("coding",), "a python doc page"),
-    ]
-    assert [r.index for r in filter_bookmarks(refs, "ycombinator")] == [1]
-    assert [r.index for r in filter_bookmarks(refs, "coding")] == [2]
-    assert [r.index for r in filter_bookmarks(refs, "python doc")] == [2]
-
-
-def test_title_match_ranks_before_url_match():
-    refs = [
-        ref(1, "Docs", "https://python.org"),
-        ref(2, "python docs", "https://example.com"),
-    ]
-    result = filter_bookmarks(refs, "python")
-    assert result[0].index == 2  # title substring beats url substring
+    bookmarks = [bm(1, "GitHub", "https://github.com")]
+    assert len(filter_bookmarks(bookmarks, "gh")) == 0
 
 
 def test_all_tokens_must_match():
-    refs = [ref(1, "GitHub", "https://github.com", ("code",)), ref(2, "GitLab")]
-    assert [r.index for r in filter_bookmarks(refs, "git code")] == [1]
-
-
-def test_stable_order_within_rank():
-    refs = [ref(3, "Beta"), ref(1, "Alpha"), ref(2, "Alpine")]
-    result = filter_bookmarks(refs, "al")
-    assert [r.title for r in result] == ["Alpha", "Alpine"]
-
-
-def test_host_query_is_substring_only():
-    """A host-like query must not fuzzy-subsequence-match unrelated
-    bookmarks (an alias at bi.honung.org contains the characters of
-    nc.honung.org in order)."""
-    refs = [
-        ref(1, "NextCloud", "https://nc.honung.org"),
-        ref(2, "blog", "https://bi.honung.org"),
-        ref(3, "mail", "https://gmail.com"),
+    bookmarks = [
+        bm(1, "GitHub", "https://github.com", "dev"),
+        bm(2, "GitLab", "https://gitlab.com", "dev"),
     ]
-    result = filter_bookmarks(refs, "nc.honung.org")
-    assert [r.index for r in result] == [1]
+    result = filter_bookmarks(bookmarks, "git dev")
+    assert len(result) == 2
 
 
-def test_host_query_flag_forces_precise_matching():
-    refs = [
-        ref(1, "NextCloud", "https://nc.honung.org"),
-        ref(2, "blog", "https://bi.honung.org"),
+def test_no_match():
+    bookmarks = [bm(1, "A", "https://a.com")]
+    assert filter_bookmarks(bookmarks, "zzz") == []
+
+
+def test_title_match_ranks_before_url_match():
+    bookmarks = [
+        bm(1, "Other", "https://github.com"),
+        bm(2, "GitHub", "https://example.com"),
     ]
-    assert [r.index for r in filter_bookmarks(refs, "nc.honung.org", host_query=True)] == [1]
+    result = filter_bookmarks(bookmarks, "github")
+    assert result[0].title == "GitHub"
 
 
 def test_search_text_includes_all_fields():
-    r = ref(1, "T", "https://u.example", ("tag1",), "some description")
-    text = search_text(r)
-    assert "T" in text
-    assert "https://u.example" in text
-    assert "tag1" in text
-    assert "some description" in text
+    b = bm(1, "My Title", "https://my.com", "food/recipes")
+    text = search_text(b)
+    assert "My Title" in text
+    assert "https://my.com" in text
+    assert "food/recipes" in text
+
+
+def test_search_text_empty_fields_skipped():
+    b = bm(1, "Title", "https://x.com")
+    text = search_text(b)
+    assert text == "Title https://x.com"

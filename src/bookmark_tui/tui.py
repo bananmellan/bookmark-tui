@@ -1,22 +1,22 @@
-"""Curses rendering layer for buku-tui.
+"""Curses rendering layer for bookmark-tui.
 
 Thin: it renders screen dataclasses from app.py and translates
 keystrokes into the symbolic key names the App controller understands.
 All behavior lives in app.py; this module only draws.
+
+The search bar is centered: as you type, the prompt stays in the
+middle of the screen.
 
 Key bindings:
 - enter: Return, Ctrl+m or Ctrl+j — open URL (in list/detail)
 - back/quit: Esc or Ctrl+l
 - up/down: arrow keys, Ctrl+p / Ctrl+n (emacs style)
 - left/right: arrow keys (cursor movement in edit form)
-- refresh: Ctrl+r; quit: Ctrl+c
+- quit: Ctrl+c
 - details: Ctrl+o (in list)
 - add: Ctrl+a or Tab (in list)
 - edit: e (in detail); delete: d (in detail)
 - save: Ctrl+s or Enter on last field (in edit form)
-
-The list renders three-line blocks (title, url, tags) so rows line up;
-columns are colored when the terminal supports colors.
 """
 
 from __future__ import annotations
@@ -34,15 +34,15 @@ from .app import (
     QuitRequested,
     EDIT_FIELDS,
 )
-from .models import BookmarkRef
+from .models import Bookmark
 
-_ITEM_HEIGHT = 3
-_LIST_TOP = 2
+_ITEM_HEIGHT = 2
+_LIST_TOP = 3
 _INDENT = "  "
 
 _PAIR_TITLE = 1
 _PAIR_URL = 2
-_PAIR_TAGS = 3
+_PAIR_CATEGORY = 3
 _PAIR_PROMPT = 4
 _PAIR_DIM = 5
 _PAIR_SELECTED = 6
@@ -63,7 +63,7 @@ def _init_colors() -> None:
         return
     curses.init_pair(_PAIR_TITLE, curses.COLOR_WHITE, bg)
     curses.init_pair(_PAIR_URL, curses.COLOR_BLUE, bg)
-    curses.init_pair(_PAIR_TAGS, curses.COLOR_MAGENTA, bg)
+    curses.init_pair(_PAIR_CATEGORY, curses.COLOR_MAGENTA, bg)
     curses.init_pair(_PAIR_PROMPT, curses.COLOR_YELLOW, bg)
     curses.init_pair(_PAIR_DIM, curses.COLOR_CYAN, bg)
     curses.init_pair(_PAIR_SELECTED, curses.COLOR_GREEN, bg)
@@ -107,8 +107,6 @@ def _key_name(ch: int) -> str:
         return "down"  # Ctrl+n
     if ch == 16:
         return "up"  # Ctrl+p
-    if ch == 18:
-        return "ctrl_r"
     if ch == 1:
         return "ctrl_a"  # Ctrl+a: add new
     if ch == 15:
@@ -156,7 +154,7 @@ def _truncate(text: str, width: int) -> str:
         return text
     if width <= 1:
         return text[:width]
-    return text[: width - 1] + "\u2026"
+    return text[: width - 1] + "…"
 
 
 def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
@@ -172,6 +170,15 @@ def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
         pass
 
 
+def _put_centered(stdscr, y: int, text: str, attr: int) -> None:
+    """Write text centered horizontally on row y."""
+    height, width = stdscr.getmaxyx()
+    if y < 0 or y >= height:
+        return
+    x = max(0, (width - len(text)) // 2)
+    _put(stdscr, y, x, text, attr)
+
+
 def _draw_list(stdscr, app: App) -> None:
     screen = app.screen
     assert isinstance(screen, ListScreen)
@@ -180,47 +187,56 @@ def _draw_list(stdscr, app: App) -> None:
     app._clamp(screen, list_height)
 
     stdscr.erase()
-    header = "buku"
-    if screen.host_filter:
-        header += f"  ({screen.host_filter})"
-    _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
 
+    # Centered search bar
     prompt = f"> {screen.query}"
-    _put(stdscr, 1, 0, _truncate(prompt, width - 1), _pair(_PAIR_PROMPT))
+    _put_centered(stdscr, 0, prompt, _pair(_PAIR_PROMPT))
 
     visible = screen.visible
-    title_attr = _pair(_PAIR_TITLE)
-    url_attr = _pair(_PAIR_URL)
-    tags_attr = _pair(_PAIR_TAGS)
-    avail = max(1, width - 1 - len(_INDENT))
-
-    for row in range(list_height):
-        idx = screen.offset + row
-        if idx >= len(visible):
-            break
-        ref = visible[idx]
-        y = _LIST_TOP + row * _ITEM_HEIGHT
-        selected = idx == screen.selected
-        base = curses.A_REVERSE if selected else curses.A_NORMAL
-
-        _put(stdscr, y, 0, _truncate(ref.title, avail), base | title_attr)
-        _put(stdscr, y + 1, 0, _truncate(_INDENT + ref.url, avail), base | url_attr)
-        tags = ",".join(ref.tags)
-        if tags:
-            _put(stdscr, y + 2, 0, _truncate(_INDENT + tags, avail), base | tags_attr)
-        else:
-            _put(stdscr, y + 2, 0, " " * min(avail, width - 1), base)
 
     if not screen.query.strip():
-        hint = "type to search bookmarks  \u00b7  ctrl-a: add"
-        _put(stdscr, _LIST_TOP, 0, _truncate(hint, width - 1), curses.A_DIM)
+        hint = "type to search"
+        _put_centered(stdscr, _LIST_TOP, hint, curses.A_DIM)
+    else:
+        title_attr = _pair(_PAIR_TITLE)
+        url_attr = _pair(_PAIR_URL)
+        cat_attr = _pair(_PAIR_CATEGORY)
+        sel_attr = curses.A_REVERSE | _pair(_PAIR_SELECTED)
+        avail = max(1, width - 1 - len(_INDENT))
 
-    status = f"{len(visible)}/{len(screen.refs)} bookmarks"
+        for row in range(list_height):
+            idx = screen.offset + row
+            if idx >= len(visible):
+                break
+            bm = visible[idx]
+            is_selected = idx == screen.selected
+            base_attr = sel_attr if is_selected else curses.A_NORMAL
+
+            y_title = _LIST_TOP + row * _ITEM_HEIGHT
+            y_url = y_title + 1
+
+            title_text = _truncate(bm.title or bm.url, avail)
+            _put(stdscr, y_title, 2, title_text, base_attr | title_attr)
+
+            url_text = _truncate(bm.url, avail)
+            _put(stdscr, y_url, 2, url_text, base_attr | url_attr)
+
+            if bm.category:
+                cat_text = _truncate(f"  [{bm.category}]", avail)
+                _put(stdscr, y_url, max(2, width - len(cat_text) - 1), cat_text,
+                     base_attr | cat_attr)
+
+    # Status bar
+    status = f"{len(visible)}/{len(screen.bookmarks)} bookmarks"
     if screen.message:
-        status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: open URL  ctrl-o: details  ctrl-a/tab: add  esc/ctrl-l: quit  ctrl-r: refresh"
+        status = f"{screen.message}  —  {status}"
+    status += "  ·  enter: open  ctrl-o: details  ctrl-a/tab: add  esc: quit"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
-    stdscr.move(1, min(2 + len(screen.query), width - 1))
+
+    # Position cursor in the centered search bar
+    prompt_len = len(prompt)
+    cursor_x = max(0, (width - prompt_len) // 2) + prompt_len
+    stdscr.move(0, min(cursor_x, width - 1))
     stdscr.refresh()
 
 
@@ -228,88 +244,68 @@ def _draw_detail(stdscr, app: App) -> None:
     screen = app.screen
     assert isinstance(screen, DetailScreen)
     height, width = stdscr.getmaxyx()
-    ref = screen.ref
+    bm = screen.bookmark
 
     stdscr.erase()
-    if ref is not None:
-        title = ref.title or ref.url
-        _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
-    else:
-        _put(stdscr, 0, 0, "Bookmark", curses.A_BOLD)
-
-    if ref is None:
+    if bm is None:
+        _put(stdscr, 0, 0, "No bookmark selected", curses.A_BOLD)
         _put(stdscr, height - 1, 0, "esc: back", curses.A_DIM)
         stdscr.refresh()
         return
 
-    y = 2
+    title = bm.title or "(untitled)"
+    _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
+    _put(stdscr, 1, 0, _truncate(f"#{bm.id}", width - 1), curses.A_DIM)
+
     fields = [
-        ("URL", ref.url),
-        ("Title", ref.title or "(none)"),
-        ("Tags", ", ".join(ref.tags) if ref.tags else "(none)"),
-        ("Desc", ref.description or "(none)"),
-        ("Index", f"#{ref.index}"),
+        ("URL", bm.url),
+        ("Title", bm.title),
+        ("Category", bm.category or "(none)"),
     ]
-    label_w = max(len(label) for label, _ in fields)
-    for label, value in fields:
-        _put(stdscr, y, 0, label.ljust(label_w), curses.A_BOLD | _pair(_PAIR_TAGS))
-        _put(stdscr, y, label_w + 2, _truncate(value, width - label_w - 3), _pair(_PAIR_TITLE))
-        y += 1
-        if y >= height - 2:
-            break
+    label_w = max(len(label) for label, _ in fields) + 2
+    for i, (label, value) in enumerate(fields):
+        y = 3 + i * 2
+        _put(stdscr, y, 2, label.ljust(label_w), curses.A_BOLD | _pair(_PAIR_CATEGORY))
+        _put(stdscr, y, 2 + label_w, _truncate(value, width - label_w - 4), curses.A_NORMAL)
 
     if screen.message:
         _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
-    status = "enter: open URL  e: edit  d: delete  ctrl-a: add  esc/ctrl-l: back"
+    status = "enter: open URL  e: edit  d: delete  ctrl-a: add  esc: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.refresh()
-
-
-_FIELD_LABELS = {
-    "url": "URL",
-    "title": "Title",
-    "tags": "Tags",
-    "desc": "Description",
-}
 
 
 def _draw_edit(stdscr, app: App) -> None:
     screen = app.screen
     assert isinstance(screen, EditScreen)
     height, width = stdscr.getmaxyx()
-    app._clamp(screen, height)
+    app._clamp(screen, 0)
 
     stdscr.erase()
-    header = "Edit bookmark" if not screen.is_new else "Add bookmark"
+    header = "Add bookmark" if screen.is_new else "Edit bookmark"
     _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
 
-    y = 2
-    label_w = max(len(_FIELD_LABELS[f]) for f in EDIT_FIELDS)
+    labels = {"url": "URL", "title": "Title", "category": "Category"}
+    label_w = max(len(v) for v in labels.values()) + 2
+
     for i, field_name in enumerate(EDIT_FIELDS):
-        label = _FIELD_LABELS[field_name]
-        value = screen.values.get(field_name, "")
+        y = 2 + i * 2
         is_current = i == screen.field_idx
         base = curses.A_REVERSE if is_current else curses.A_NORMAL
-
-        _put(stdscr, y, 0, label.ljust(label_w), base | curses.A_BOLD | _pair(_PAIR_TAGS))
-        _put(stdscr, y, label_w + 2, _truncate(value, width - label_w - 3), base | _pair(_PAIR_TITLE))
-        y += 1
-        if y >= height - 3:
-            break
+        label = labels[field_name]
+        _put(stdscr, y, 2, label.ljust(label_w), base | curses.A_BOLD | _pair(_PAIR_CATEGORY))
+        value = screen.values.get(field_name, "")
+        _put(stdscr, y, 2 + label_w, _truncate(value, width - label_w - 4), base)
 
     if screen.message:
         _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
-
-    is_last = screen.field_idx == len(EDIT_FIELDS) - 1
-    if is_last:
-        status = "enter/ctrl-s: save  esc: cancel  \u2191\u2193: navigate"
-    else:
-        status = "enter/tab: next  \u2191\u2193: navigate  esc: cancel"
+    status = "tab/enter: next field  ctrl-s: save  esc: cancel"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
 
-    value = screen.current_value
-    cursor_x = label_w + 2 + screen.cursor
-    stdscr.move(2 + screen.field_idx, min(cursor_x, width - 1))
+    # Position cursor at the current field value
+    field_row = 2 + screen.field_idx * 2
+    cursor_x = 2 + label_w + screen.cursor
+    stdscr.move(field_row, min(cursor_x, width - 1))
     stdscr.refresh()
 
 
@@ -319,25 +315,25 @@ def _draw_confirm(stdscr, app: App) -> None:
     height, width = stdscr.getmaxyx()
 
     stdscr.erase()
-    if screen.ref is not None:
-        title = screen.ref.title or screen.ref.url
-        _put(stdscr, 0, 0, _truncate(f"Delete: {title}", width - 1), curses.A_BOLD)
-        _put(stdscr, 1, 0, _truncate(screen.ref.url, width - 1), _pair(_PAIR_URL))
+    bm = screen.bookmark
+    title = bm.title if bm else "?"
+    url = bm.url if bm else ""
+    _put(stdscr, 0, 0, _truncate(f"Delete: {title}", width - 1), curses.A_BOLD)
+    _put(stdscr, 1, 0, _truncate(url, width - 1), _pair(_PAIR_URL))
 
-    _put(stdscr, 3, 0, _truncate("Are you sure? (y/n)", width - 1), _pair(_PAIR_PROMPT))
-
+    _put(stdscr, 3, 2, "Are you sure?", curses.A_NORMAL)
     yes_attr = curses.A_REVERSE if screen.selected == 0 else curses.A_NORMAL
     no_attr = curses.A_REVERSE if screen.selected == 1 else curses.A_NORMAL
-    _put(stdscr, 5, 4, " Yes ", yes_attr | _pair(_PAIR_SELECTED))
-    _put(stdscr, 5, 12, " No ", no_attr)
+    _put(stdscr, 5, 4, "Yes", yes_attr)
+    _put(stdscr, 5, 12, "No", no_attr)
 
     if screen.message:
         _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
-    _put(stdscr, height - 1, 0, _truncate("enter/y: confirm  n/esc: cancel  \u2190\u2192: select", width - 1), curses.A_DIM)
+    _put(stdscr, height - 1, 0, _truncate("enter/y: confirm  n/esc: cancel  ←→: select", width - 1), curses.A_DIM)
     stdscr.refresh()
 
 
-def run(app: App) -> BookmarkRef | None:
+def run(app: App) -> Bookmark | None:
     """Run the curses event loop. Returns the bookmark to open, or None
     when the user quit without selecting."""
     locale.setlocale(locale.LC_ALL, "")
@@ -345,10 +341,10 @@ def run(app: App) -> BookmarkRef | None:
     return curses.wrapper(_loop, app)
 
 
-def _loop(stdscr, app: App) -> BookmarkRef | None:
+def _loop(stdscr, app: App) -> Bookmark | None:
     curses.curs_set(1)
     stdscr.keypad(True)
-    stdscr.timeout(80)
+    stdscr.nodelay(False)
     _init_colors()
     while True:
         screen = app.screen
@@ -369,7 +365,7 @@ def _loop(stdscr, app: App) -> BookmarkRef | None:
         try:
             app.handle_key(name)
         except OpenRequested as exc:
-            return exc.ref
+            return exc.bookmark
         except QuitRequested:
             return None
         except KeyboardInterrupt:

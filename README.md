@@ -1,126 +1,109 @@
-# buku-tui
+# bookmark-tui
 
-A fast, rofi-like **terminal UI** for [buku](https://github.com/jarun/buku)
-bookmarks with full editing. No GUI toolkit — just run it from a terminal.
+A fast, rofi-like **terminal UI** for managing bookmarks. No external
+dependencies — just Python 3.10+ and curses. Import from buku, Firefox,
+or Chrome, then search, edit, and open bookmarks from your terminal.
 
 ## Features
 
-- Launching `buku-tui` opens a full-screen terminal search over **all
-  bookmarks**. **No items are shown until you type at least one
-  character** in the search field — the list appears as you type.
-  **Search is live**: the list filters as you type, matching on title,
-  url, tags and description (substring first, then fuzzy subsequence
-  for tokens of 3+ characters). Non-ASCII input (å, ä, ö, …) works.
-- Each bookmark renders as a **three-line block** so everything fits:
-  the **title** on the first line, the **url** on the second, and the
-  **tags** on the third (url and tags indented). Lines are colored
-  when the terminal supports colors.
-- **Enter** opens the selected bookmark's URL in the browser and quits
-  (rofi-style: one selection ends the run). **Ctrl+o** opens the
-  **detail view** showing all fields: URL, title, tags, description
-  and index.
+- **Centered search bar**: the prompt stays centered as you type.
+  Search is live — the list filters as you type, matching on title,
+  url, and category (substring first, then fuzzy subsequence for
+  tokens of 3+ characters). Non-ASCII input (å, ä, ö, …) works.
+- **Enter opens the URL** in your browser and quits (rofi-style: one
+  selection ends the run). **Ctrl+o** opens the detail view.
 - **Full editing** within the interface:
-  - **Add**: `Ctrl+a` or `Tab` opens a blank edit form. Fill in URL,
-    title, tags and description. Save with `Enter` on the last field
-    or `Ctrl+s`.
-  - **Edit**: press `e` in the detail view to edit any bookmark's
-    fields. Navigate between fields with `↑`/`↓` or `Tab`/`Enter`.
-    Move the cursor with `←`/`→`, `Home`/`End`. Delete with
-    `Backspace`. Save with `Enter` on the last field or `Ctrl+s`.
-    Cancel with `Esc`.
-  - **Delete**: press `d` in the detail view, then confirm with `y` or
-    `Enter`.
-- **Open URL**: press `Enter` in the list or detail view to open the
-  bookmark's URL in the browser and quit (like rofi, one selection ends
-  the run).
-- Bookmarks are listed from a local cache
-  (`$XDG_CACHE_HOME/buku-tui/bookmarks.v1.json`) containing only
-  **index, title, url, tags and description**. Startup is fast: the
-  list renders straight from the cache; when the cache is older than
-  `BUKU_TUI_CACHE_TTL` seconds (default 600) a background rebuild is
-  spawned without blocking the UI. The cache is invalidated after
-  every add/edit/delete so the list is always current.
-- If the clipboard contains an `http(s)://` URL or a bare hostname
-  (`wl-paste`, `xclip` or `xsel`), bookmarks whose url contains the
-  clipboard hostname (fuzzy: path, query, trailing slashes and case are
-  ignored) are surfaced: matches are listed best-first with the hostname
-  prefilled as the search query, the rest of the list below them. URL
-  matching only ever reads the cache, and runs on every launch while the
-  clipboard holds a URL. Match ranking: exact host equality first, then
-  subdomain, then host-contains; ties break toward titles that name the
-  host (including camelCase initials, so "NextCloud" ranks for
-  `nc.honung.org`).
-- `buku` is always invoked with `--nostdin`, so a locked (encrypted)
-  database or an interrupted edit fails fast with a message instead of
-  blocking the TUI on a prompt.
+  - **Add**: `Ctrl+a` or `Tab` opens a blank form. Fill in URL, title,
+    and category. Save with `Ctrl+s` or `Tab` on the last field.
+  - **Edit**: press `e` in the detail view to edit any bookmark.
+    Navigate fields with `↑`/`↓`/`Tab`. Move the cursor with
+    `←`/`→`, `Home`/`End`. Delete with `Backspace`. Save with `Ctrl+s`
+    or `Tab` on the last field. Cancel with `Esc`.
+  - **Delete**: press `d` in the detail view, then confirm with `y`
+    or `Enter`.
+- **Search persists**: if you search, open a detail, edit, or delete,
+  going back returns to the list with your search term intact.
+- After saving an edit or add, you return to the **item overview**
+  (the filtered list), not the start screen.
+- **Import** from buku (SQLite `.db` or JSON export), Firefox
+  (bookmarks JSON backup), or Chrome/Chromium/Edge (bookmarks JSON).
+  Browser folder hierarchies become categories:
+  `Bookmarks Bar > Food > Recipes` → category `food/recipes`.
+- Data is stored as a simple JSON file
+  (`$XDG_DATA_HOME/bookmark-tui/bookmarks.json`) with only **id, url,
+  title, and category**. Writes are atomic (temp file + rename).
 
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `buku`
-- `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
-  (optional — without one, the clipboard URL matching at launch is
-  skipped)
 - A terminal with curses support
+- `xdg-open` (Linux), `open` (macOS), or `start` (Windows) for opening URLs
 
 ## Install
 
 ```sh
-git clone https://github.com/bananmellan/buku-tui
-cd buku-tui
+git clone https://github.com/bananmellan/bookmark-tui
+cd bookmark-tui
 pip install .            # or: pipx install .
 ```
 
 Or run from the checkout:
 
 ```sh
-./bin/buku-tui
+./bin/bookmark-tui
 ```
 
-Bind `buku-tui` (or `bin/buku-tui`) to a key in your window manager or
-shell.
+Bind `bookmark-tui` to a key in your window manager or shell.
 
 ## Usage
 
+### Importing bookmarks
+
+```sh
+# Import from a buku database
+bookmark-tui --import-file ~/.local/share/buku/bookmarks.db
+
+# Import from a Firefox bookmarks backup
+bookmark-tui --import-file ~/bookmarks.json
+
+# Import from Chrome/Chromium/Edge
+bookmark-tui --import-file ~/.config/google-chrome/Default/Bookmarks
+
+# Import only, don't launch the TUI
+bookmark-tui --import-file bookmarks.db --no-tui
+```
+
+Import **replaces** all existing bookmarks. The TUI launches
+automatically after import (unless `--no-tui` is given).
+
 ### List view
 
-- Type to search bookmarks (matches on title, url, tags and description;
-  substring first, then fuzzy subsequence for tokens of 3+ characters).
-  The list only appears once the search field has at least one
-  character. Bookmarks show as three-line blocks: title, url, tags.
+- Type to search (matches on title, url, and category). The list only
+  appears once the search field has at least one character.
+- The search bar is **centered** — it stays in the middle as you type.
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection.
-  Emacs-style binds also work: `Ctrl+n`/`Ctrl+p` move down/up.
-- `Enter` opens the selected bookmark's URL in the browser and quits
-  (rofi-style: one selection ends the run).
-- `Ctrl+o` opens the selected bookmark's **detail view**.
+  Emacs-style: `Ctrl+n`/`Ctrl+p` move down/up.
+- `Enter` opens the selected bookmark's URL in the browser and quits.
+- `Ctrl+o` opens the **detail view**.
 - `Ctrl+a` or `Tab` opens the **add** form.
-- `Esc` (or `Ctrl+l`) first clears the search query, then quits.
-- `Ctrl+r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
-- When the clipboard holds a URL, the matching bookmarks are listed with
-  the host prefilled as the query (the prefilled host counts as search
-  input, so matches show immediately). Host-like queries match precisely
-  (substring only — no fuzzy subsequence), so unrelated bookmarks never
-  appear; once you edit the query past the host, normal fuzzy matching
-  resumes.
+- `Esc` first clears the search query, then quits.
+- `Ctrl+c` quits immediately.
 
 ### Detail view
 
 - `Enter` opens the URL in the browser and quits.
-- `e` opens the **edit** form for this bookmark.
+- `e` opens the **edit** form.
 - `d` opens the **delete** confirmation.
 - `Ctrl+a` opens the **add** form.
-- `Esc` (or `Ctrl+l`) goes back to the list.
+- `Esc` goes back to the list (search term preserved).
 
 ### Edit / Add form
 
-- `↑`/`↓` or `Tab` moves between fields (URL → Title → Tags →
-  Description).
-- `Enter` on the last field (Description) saves. `Ctrl+s` saves from
-  any field.
+- `↑`/`↓` or `Tab` moves between fields (URL → Title → Category).
+- `Ctrl+s` or `Tab` on the last field saves.
 - `←`/`→`, `Home`/`End` move the cursor within a field.
 - `Backspace` deletes the character before the cursor.
 - `Esc` cancels and returns to the list.
-- Tags are comma-separated (e.g. `python, tutorial, cli`).
 
 ### Delete confirmation
 
@@ -128,21 +111,23 @@ shell.
 - `n` or `Esc` cancels.
 - `←`/`→` toggles between Yes and No.
 
-### Configuration (environment variables)
+### Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BUKU_TUI_BUKU` | `buku` | buku executable |
-| `BUKU_TUI_CACHE_DIR` | `$XDG_CACHE_HOME/buku-tui` | cache/state directory |
-| `BUKU_TUI_CACHE_TTL` | `600` | cache freshness in seconds |
-| `BUKU_TUI_DEBUG` | unset | set to `1` to log to `debug.log` |
-| `BUKU_TUI_VERBOSE` | unset | set to `1` (or pass `--verbose`) to log decision points (clipboard content, extracted host, cache stats, match count) to stderr and `debug.log` |
+| `XDG_DATA_HOME` | `~/.local/share` | Base directory for the bookmark store |
+| `--store PATH` | `$XDG_DATA_HOME/bookmark-tui/bookmarks.json` | Custom store file path |
 
-Debugging: run `buku-tui --verbose` (or `BUKU_TUI_VERBOSE=1 buku-tui`)
-with a URL in the clipboard and watch stderr — or `tail -f
-$XDG_CACHE_HOME/buku-tui/debug.log` — to see the clipboard text, the
-extracted host, how many cached bookmarks there are, and how many
-matched.
+## Data model
+
+Each bookmark has four fields:
+
+| Field | Description |
+| --- | --- |
+| `id` | Stable integer identity |
+| `url` | The bookmark URL (required) |
+| `title` | Display title (optional) |
+| `category` | Folder path, e.g. `food/recipes/vegetarian` (optional) |
 
 ## Development
 
@@ -153,16 +138,14 @@ python3 -m pytest
 Layout:
 
 ```
-bin/buku-tui             launcher for running from a checkout
-src/buku_tui/
-  cli.py                 entry point: arg parsing, --rebuild, tty check
-  app.py                 UI-agnostic controller (list/detail/edit/confirm screens + key handling)
-  tui.py                 curses rendering (list, detail, edit, confirm) and key translation
-  search.py              live filtering (token substring/subsequence ranking)
-  bukucli.py             buku subprocess wrapper: list, open, add, update, delete
-  cache.py               metadata cache (atomic, 0600, TTL, background refresh)
-  clipboard.py           wl-clipboard/xclip/xsel abstraction, URL host extraction
-  config.py              environment-based configuration
-  models.py              BookmarkRef dataclass
-tests/                   pytest suite (app controller, bukucli, search, tui, pty smoke, integration)
+bin/bookmark-tui           launcher for running from a checkout
+src/bookmark_tui/
+  cli.py                   entry point: arg parsing, --import, TUI launch
+  app.py                   UI-agnostic controller (list/detail/edit/confirm + key handling)
+  tui.py                   curses rendering (centered search bar) and key translation
+  search.py                live filtering (token substring/subsequence ranking)
+  storage.py               JSON file storage (atomic writes, CRUD)
+  import_bookmarks.py      import from buku .db, Firefox/Chrome .json
+  models.py                Bookmark dataclass
+tests/                     pytest suite (models, storage, search, import, app, tui, cli, pty)
 ```
