@@ -168,25 +168,23 @@ class BukuCli:
     def add(self, url: str, title: str, tags: list[str], desc: str) -> int:
         """Add a new bookmark. Returns the new database index.
 
-        Uses `--title <title>` when a title is given (which also skips
-        the web fetch for the title), `--title` (no argument) when the
-        title is empty (skip fetch, leave title unset). Tags are passed
-        as a positional comma-separated argument after the URL.
-        `--tacit` suppresses the confirmation prompt.
+        Uses `--title <title>` when a title is given, `--title` (no
+        argument) when the title is empty. `--offline` skips the web
+        fetch for title/description. `--tacit` suppresses output.
 
         With `--tacit` buku prints nothing on success, so the new index
         is resolved by listing all bookmarks and finding the URL.
         """
         argv = [self.binary, "--nostdin", "-a", url]
-        if tags:
-            argv.append(",".join(tags))
         if title:
             argv.extend(["--title", title])
         else:
             argv.append("--title")
+        if tags:
+            argv.extend(["--tag", ",".join(tags)])
         if desc:
             argv.extend(["-c", desc])
-        argv.append("--tacit")
+        argv.extend(["--offline", "--tacit"])
         self._exec(argv)
         return self._find_index_by_url(url)
 
@@ -212,12 +210,13 @@ class BukuCli:
     def update(self, index: int, url: str, title: str, tags: list[str], desc: str) -> bool:
         """Update an existing bookmark's fields.
 
-        An empty string clears the field. For tags, buku cannot clear
-        all tags in one call with `--tag` (no argument refreshes instead
-        of clearing), so each existing tag is removed individually with
-        `--tag - <tag>`. Title and description clear with the bare flag
-        (`--title` / `-c` with no argument). `--tacit` is passed on every
-        call to skip confirmation prompts that would block inside the TUI.
+        An empty string clears the field. `--offline` prevents buku from
+        fetching the URL for title/description refresh. `--tacit` skips
+        confirmation prompts.
+
+        Tags: old tags are removed in one call with `--tag - ,<tags>`,
+        then new tags are set with `--tag ,<tags>`. If the new tag list
+        is empty, only the removal call is made.
         """
         argv = [self.binary, "--nostdin", "-u", str(index)]
         if url:
@@ -230,39 +229,42 @@ class BukuCli:
             argv.extend(["-c", desc])
         else:
             argv.append("-c")
-        argv.append("--tacit")
+        argv.extend(["--offline", "--tacit"])
         self._exec(argv)
+
+        old_tags = self._get_tags(index)
+        if old_tags:
+            self._exec(
+                [
+                    self.binary, "--nostdin", "-u", str(index),
+                    "--tag", "-", "," + ",".join(old_tags),
+                    "--offline", "--tacit",
+                ]
+            )
         if tags:
             self._exec(
-                [self.binary, "--nostdin", "-u", str(index), "--tag", ",".join(tags), "--tacit"]
+                [
+                    self.binary, "--nostdin", "-u", str(index),
+                    "--tag", "," + ",".join(tags),
+                    "--offline", "--tacit",
+                ]
             )
-        else:
-            self._remove_all_tags(index)
         return True
 
-    def _remove_all_tags(self, index: int) -> None:
-        """Remove every tag from a bookmark, one at a time.
-
-        buku's `--tag` with no argument refreshes the title/desc instead
-        of clearing tags, so each existing tag must be removed with
-        `--tag - <tag>`.
-        """
+    def _get_tags(self, index: int) -> list[str]:
+        """Return the current tags for a bookmark, or empty list."""
         out = self._exec([self.binary, "--nostdin", "-j", "-p"])
         start = out.find("[")
         if start < 0:
-            return
+            return []
         try:
             data = json.loads(out[start:])
         except json.JSONDecodeError:
-            return
+            return []
         for raw in parse_bookmarks(data):
-            if raw.index != index:
-                continue
-            for tag in raw.tags:
-                self._exec(
-                    [self.binary, "--nostdin", "-u", str(index), "--tag", "-", tag, "--tacit"]
-                )
-            return
+            if raw.index == index:
+                return list(raw.tags)
+        return []
 
     def delete(self, index: int) -> bool:
         """Delete a bookmark by index. Uses --tacit to skip confirmation."""

@@ -191,11 +191,13 @@ def test_add_invokes_buku_with_correct_args():
     assert idx == 3
     argv = calls[0]
     assert argv[:4] == ["buku", "--nostdin", "-a", "https://example.com"]
-    assert "tag1,tag2" in argv
     assert "--title" in argv
     assert "My Title" in argv
+    assert "--tag" in argv
+    assert "tag1,tag2" in argv
     assert "-c" in argv
     assert "A desc" in argv
+    assert "--offline" in argv
     assert "--tacit" in argv
 
 
@@ -211,12 +213,14 @@ def test_add_with_empty_title_uses_flag_form():
     client = BukuCli("buku", runner=runner)
     client.add("https://example.com", "", [], "")
     argv = calls[0]
-    # --title with no value follows
+    # --title with no value (followed by --offline)
     title_idx = argv.index("--title")
-    assert title_idx == len(argv) - 1 or argv[title_idx + 1] == "--tacit"
+    assert argv[title_idx + 1] == "--offline"
+    assert "--offline" in argv
+    assert "--tacit" in argv
 
 
-def test_add_with_no_tags_omits_positional():
+def test_add_with_no_tags_omits_tag_flag():
     calls = []
 
     def runner(argv):
@@ -229,10 +233,7 @@ def test_add_with_no_tags_omits_positional():
     client.add("https://example.com", "Title", [], "")
     argv = calls[0]
     assert "--title" in argv
-    # No comma-separated tags positional between URL and --title
-    url_idx = argv.index("https://example.com")
-    title_idx = argv.index("--title")
-    assert title_idx == url_idx + 1
+    assert "--tag" not in argv
 
 
 def test_add_resolves_index_by_listing():
@@ -266,6 +267,9 @@ def test_update_invokes_buku_with_correct_args():
 
     def runner(argv):
         calls.append(argv)
+        if "-j" in argv:
+            # Listing to find existing tags
+            return json.dumps([{"index": 3, "uri": "https://new.com", "title": "Old", "tags": "old1,old2", "description": ""}])
         return ""
 
     client = BukuCli("buku", runner=runner)
@@ -279,12 +283,23 @@ def test_update_invokes_buku_with_correct_args():
     assert "New Title" in argv
     assert "-c" in argv
     assert "New desc" in argv
+    assert "--offline" in argv
     assert "--tacit" in argv
-    # Second call: set tags
-    tag_call = calls[1]
-    assert "--tag" in tag_call
-    assert "a,b" in tag_call
-    assert "--tacit" in tag_call
+    # Second call: list to find old tags (calls[1])
+    assert calls[1] == ["buku", "--nostdin", "-j", "-p"]
+    # Third call: remove old tags
+    remove_call = calls[2]
+    assert "--tag" in remove_call
+    assert "-" in remove_call
+    assert ",old1,old2" in remove_call
+    assert "--offline" in remove_call
+    assert "--tacit" in remove_call
+    # Fourth call: set new tags
+    set_call = calls[3]
+    assert "--tag" in set_call
+    assert ",a,b" in set_call
+    assert "--offline" in set_call
+    assert "--tacit" in set_call
 
 
 def test_update_with_empty_fields_clears_them():
@@ -308,16 +323,20 @@ def test_update_with_empty_fields_clears_them():
     assert argv[title_idx + 1] == "-c"
     # -c with no value (clears desc)
     c_idx = argv.index("-c")
-    assert c_idx == len(argv) - 2  # -c is followed by --tacit
-    # --tacit is last
-    assert argv[-1] == "--tacit"
-    # Then: list to find tags, then remove each tag
-    tag_removals = [c for c in calls if "-" in c and "--tag" in c]
-    assert len(tag_removals) == 2
-    assert "old1" in tag_removals[0]
-    assert "old2" in tag_removals[1]
-    assert "--tacit" in tag_removals[0]
-    assert "--tacit" in tag_removals[1]
+    assert argv[c_idx + 1] == "--offline"
+    assert "--offline" in argv
+    assert "--tacit" in argv
+    # Second call: list to find old tags
+    assert calls[1] == ["buku", "--nostdin", "-j", "-p"]
+    # Third call: remove old tags (all at once)
+    remove_call = calls[2]
+    assert "--tag" in remove_call
+    assert "-" in remove_call
+    assert ",old1,old2" in remove_call
+    assert "--offline" in remove_call
+    assert "--tacit" in remove_call
+    # No fourth call (no new tags to set)
+    assert len(calls) == 3
 
 
 def test_update_with_tags_replaces_tagset():
@@ -325,6 +344,9 @@ def test_update_with_tags_replaces_tagset():
 
     def runner(argv):
         calls.append(argv)
+        if "-j" in argv:
+            # No existing tags on this bookmark
+            return json.dumps([{"index": 1, "uri": "https://x.com", "title": "T", "tags": "", "description": "d"}])
         return ""
 
     client = BukuCli("buku", runner=runner)
@@ -333,14 +355,18 @@ def test_update_with_tags_replaces_tagset():
     argv = calls[0]
     assert "--title" in argv
     assert "T" in argv
+    assert "--offline" in argv
     assert "--tacit" in argv
-    # Second call: set tags
-    tag_call = calls[1]
-    assert "--tag" in tag_call
-    assert "new1,new2" in tag_call
-    assert "--tacit" in tag_call
-    # No tag removal calls
-    assert len(calls) == 2
+    # Second call: list to find old tags (none exist)
+    assert calls[1] == ["buku", "--nostdin", "-j", "-p"]
+    # Third call: set new tags (no removal since no old tags)
+    set_call = calls[2]
+    assert "--tag" in set_call
+    assert ",new1,new2" in set_call
+    assert "--offline" in set_call
+    assert "--tacit" in set_call
+    # No removal call
+    assert len(calls) == 3
 
 
 def test_delete_invokes_buku_with_tacit():
