@@ -5,12 +5,16 @@ bookmarks. No GUI toolkit — just run it from a terminal.
 
 ## Features
 
-- Launching `buku-tui` opens a full-screen terminal list of **all
-  bookmarks**, sorted by title. Every row shows fixed-width columns:
-  **title**, **url** and **tags**, colored when the terminal supports
-  colors. **Search is live**: the list filters as you type, matching on
-  title, url, tags and description (substring first, then fuzzy
-  subsequence for tokens of 3+ characters).
+- Launching `buku-tui` opens a full-screen terminal search over **all
+  bookmarks**. **No items are shown until you type at least one
+  character** in the search field — the list appears as you type.
+  **Search is live**: the list filters as you type, matching on title,
+  url, tags and description (substring first, then fuzzy subsequence
+  for tokens of 3+ characters). Non-ASCII input (å, ä, ö, …) works.
+- Each bookmark renders as a **three-line block** so everything fits:
+  the **title** on the first line, the **url** on the second, and the
+  **tags** on the third (url and tags indented). Lines are colored
+  when the terminal supports colors.
 - Pressing `Enter` on a bookmark opens its URL in the browser (via
   `buku -o <index>`, so your `BROWSER` / `xdg-open` setup is honored)
   and **quits the program** — like rofi, one selection ends the run.
@@ -61,14 +65,17 @@ shell.
 
 ## Usage
 
-- Type to filter bookmarks (matches on title, url, tags and description;
+- Type to search bookmarks (matches on title, url, tags and description;
   substring first, then fuzzy subsequence for tokens of 3+ characters).
+  The list only appears once the search field has at least one
+  character. Bookmarks show as three-line blocks: title, url, tags.
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter`
   opens the selected bookmark in the browser and quits. Emacs-style
   binds also work: `Ctrl+n`/`Ctrl+p` move down/up, `Ctrl+m` (or
   `Ctrl+j`) is enter, `Ctrl+l` is quit.
 - When the clipboard holds a URL, the matching bookmarks are listed with
-  the host prefilled as the query. Host-like queries match precisely
+  the host prefilled as the query (the prefilled host counts as search
+  input, so matches show immediately). Host-like queries match precisely
   (substring only — no fuzzy subsequence), so unrelated bookmarks never
   appear; once you edit the query past the host, normal fuzzy matching
   resumes.
@@ -104,7 +111,7 @@ bin/buku-tui             launcher for running from a checkout
 src/buku_tui/
   cli.py                 entry point: arg parsing, --rebuild, tty check
   app.py                 UI-agnostic controller (list screen + key handling)
-  tui.py                 curses rendering and key translation
+  tui.py                 curses rendering (three-line rows) and key translation
   search.py              live filtering (token substring/subsequence ranking)
   bukucli.py             buku subprocess wrapper + JSON parsing + open
   cache.py               metadata cache (atomic, 0600, TTL, background refresh)

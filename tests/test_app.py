@@ -136,8 +136,7 @@ def test_clipboard_non_url_is_ignored(tmp_path):
 def test_enter_raises_open_requested_with_selected_ref(tmp_path):
     app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
     app.start()
-    app.handle_key("down")  # Bank first (title-sorted), GitHub second
-    app.handle_key("up")
+    app.handle_key("b")  # filter to Bank (title-sorted: Bank is the match)
     with pytest.raises(OpenRequested) as exc_info:
         app.handle_key("enter")
     assert exc_info.value.ref.title == "Bank"
@@ -148,6 +147,33 @@ def test_enter_with_no_selection_does_nothing(tmp_path):
     app.start()
     screen = app.handle_key("enter")
     assert screen.refs == []
+
+
+def test_empty_query_shows_no_items(tmp_path):
+    """With an empty search field the list is empty; typing reveals items."""
+    app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
+    screen = app.start()
+    assert screen.query == ""
+    assert screen.visible == []
+    app.handle_key("b")
+    app.handle_key("a")
+    app.handle_key("n")
+    app.handle_key("k")
+    assert [r.title for r in app.screen.visible] == ["Bank"]
+    app.handle_key("backspace")
+    app.handle_key("backspace")
+    app.handle_key("backspace")
+    app.handle_key("backspace")
+    assert app.screen.visible == []
+
+
+def test_swedish_characters_are_accepted_in_query(tmp_path):
+    app = make_app(tmp_path, refs=[ref(1, "Räksmörgås", "https://food.example.se", ("mat",))])
+    app.start()
+    for ch in "räk":
+        app.handle_key(ch)
+    assert app.screen.query == "räk"
+    assert [r.title for r in app.screen.visible] == ["Räksmörgås"]
 
 
 def test_esc_clears_query_then_quits(tmp_path):
@@ -193,6 +219,7 @@ def test_navigation_keys(tmp_path):
     refs = [ref(n, f"Item {n:02d}", f"https://item{n}.example") for n in range(1, 6)]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.handle_key("i")  # one char is enough to show the list
     assert app.screen.selected == 0
     app.handle_key("down")
     assert app.screen.selected == 1
@@ -247,6 +274,7 @@ def test_selection_resets_when_query_changes(tmp_path):
     refs = [ref(n, f"Item {n:02d}", f"https://item{n}.example") for n in range(1, 6)]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.handle_key("i")
     app.handle_key("end")
     assert app.screen.selected == 4
     app.handle_key("1")

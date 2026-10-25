@@ -89,6 +89,48 @@ def test_key_name_printable():
     assert tui._key_name(0) == ""
 
 
+def test_read_key_reassembles_utf8():
+    """curses delivers a multibyte UTF-8 character as one byte per
+    getch() call; _read_key must reassemble it into the character."""
+    for text in ("å", "ä", "ö", "Å", "Ä", "Ö", "é", "日"):
+        keys = iter(text.encode("utf-8"))
+
+        class FakeScr:
+            def getch(self):
+                return next(keys)
+
+        assert tui._read_key(FakeScr()) == text
+
+
+def test_read_key_plain_ascii_passthrough():
+    class FakeScr:
+        def getch(self):
+            return ord("a")
+
+    assert tui._read_key(FakeScr()) == "a"
+
+
+def test_read_key_symbolic_passthrough():
+    import curses
+
+    class FakeScr:
+        def getch(self):
+            return curses.KEY_DOWN
+
+    assert tui._read_key(FakeScr()) == "down"
+
+
+def test_read_key_drops_malformed_sequence():
+    class FakeScr:
+        def __init__(self):
+            self.keys = iter([0xC3, ord("x")])  # lead byte then non-continuation
+
+        def getch(self):
+            return next(self.keys)
+
+    assert tui._read_key(FakeScr()) == ""
+
+
 def test_truncate():
     assert tui._truncate("hello", 10) == "hello"
     assert tui._truncate("hello world", 8) == "hello w\u2026"
@@ -141,20 +183,68 @@ class StubWindow:
         return "\n".join(lines)
 
 
-def test_draw_list_shows_bookmarks_and_prompt(tmp_path):
-    app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com", ("finance",))])
+def test_draw_list_empty_query_shows_hint_not_items(tmp_path):
+    """With an empty search field no items are drawn, just a hint."""
+    app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
     app.start()
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
+    assert "type to search" in text
+    assert "GitHub" not in text
+    assert "Bank" not in text
+    assert "0/2 bookmarks" in text
+
+
+def test_draw_list_shows_bookmarks_and_prompt(tmp_path):
+    app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com", ("finance",))])
+    app.start()
+    app.handle_key("i")  # any character reveals the list
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
     assert "buku" in text
-    assert win.row(1).startswith(">")
+    assert win.row(1).startswith("> i")
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
-    assert "code," in text  # tags column (may truncate the last tag)
+    assert "code,git" in text
+    assert "finance" in text
     assert "2/2 bookmarks" in text
     assert win.refreshed == 1
+
+
+def test_draw_list_three_line_rows(tmp_path):
+    """Each bookmark is a three-line block: title, url, tags (indented)."""
+    refs = [
+        ref(1, "GitHub", "https://github.com", ("code", "git")),
+        ref(2, "Bank", "https://bank.example.com", ("finance",)),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.handle_key("i")  # matches both titles
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # Matches are ranked by the query: "i" is a title substring of
+    # "GitHub" (rank 1) but only a url substring of Bank (rank 3), so
+    # GitHub is the first block (rows 2-4), Bank second (rows 5-7).
+    assert win.row(2).startswith("GitHub")
+    assert win.row(3).startswith("  https://github.com")
+    assert win.row(4).startswith("  code,git")
+    assert win.row(5).startswith("Bank")
+    assert win.row(6).startswith("  https://bank.example.com")
+    assert win.row(7).startswith("  finance")
+
+
+def test_draw_list_bookmark_without_tags_has_blank_third_line(tmp_path):
+    app = make_app(tmp_path, refs=[ref(1, "GitHub", "https://github.com", ())])
+    app.start()
+    app.handle_key("i")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert win.row(2).startswith("GitHub")
+    assert win.row(3).startswith("  https://github.com")
+    assert win.row(4).strip() == ""
 
 
 def test_draw_list_shows_host_filter_and_query(tmp_path):
@@ -169,96 +259,31 @@ def test_draw_list_shows_host_filter_and_query(tmp_path):
     text = win.text()
     assert "(github.com)" in text
     assert "> github.com" in text
+    # The clipboard prefill counts as a query: matches are shown.
+    assert "GitHub" in text
 
 
 def test_draw_list_marks_selected_row(tmp_path):
     app = make_app(tmp_path, refs=[ref(1), ref(2, "Bank", "https://bank.example.com")])
     app.start()
+    app.handle_key("i")
     app.handle_key("down")
     win = StubWindow()
     tui._draw_list(win, app)
     import curses
 
-    # Title-sorted: Bank is the first row (y=2), GitHub second (y=3).
+    # Title-sorted: Bank is the first block (rows 2-4), GitHub second (5-7).
     assert win.cells[(2, 0)][1] == curses.A_NORMAL
-    assert win.cells[(3, 0)][1] == curses.A_REVERSE
+    assert win.cells[(5, 0)][1] == curses.A_REVERSE
+    assert win.cells[(6, 2)][1] == curses.A_REVERSE  # url line of selection
+    assert win.cells[(7, 2)][1] == curses.A_REVERSE  # tags line of selection
 
 
-def test_draw_list_fixed_width_columns(tmp_path):
-    refs = [
-        ref(1, "GitHub", "https://github.com", ("code",)),
-        ref(2, "B", "https://b.example.com", ("x", "y", "z")),
-    ]
-    app = make_app(tmp_path, refs=refs)
-    app.start()
-    win = StubWindow()
-    tui._draw_list(win, app)
-    # Title-sorted: "B" is the first row, "GitHub" the second.
-    row_b = win.row(2)
-    row_g = win.row(3)
-    # Url columns start at the same offset on every row.
-    assert row_b.index("https://") == row_g.index("https://")
-    # Tags columns start at the same offset on every row.
-    assert row_b.index("x,y,z") == row_g.index("code")
-
-
-def test_draw_list_title_gets_half_the_row(tmp_path):
-    """The title column must not collapse next to a long url: it gets at
-    least half the row, and the url column shrinks to make room."""
-    refs = [
-        ref(1, "GitHub", "https://github.com/some/really/long/path/that/goes/on"),
-        ref(2, "A much longer bookmark title here", "https://b.example.com", ("tag",)),
-    ]
-    app = make_app(tmp_path, refs=refs)
-    app.start()
-    win = StubWindow(height=24, width=80)
-    tui._draw_list(win, app)
-    title_w, url_w, tags_w = tui._list_columns(app.screen.visible, 80)
-    assert title_w >= 79 // 2
-    sep = len(tui._COL_SEP)
-    assert title_w + (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0) <= 79
-    # Every row stays within the screen.
-    for y in range(win.height):
-        assert len(win.row(y).rstrip()) <= 79
-
-
-def test_list_columns_fit_at_every_width():
-    """The three columns always add up to at most the available width,
-    and the title always gets at least half of it."""
-    refs = [
-        BookmarkRef(index=1, url="https://github.com/bananmellan/buku-tui", title="GitHub", tags=("git", "tui", "code")),
-        BookmarkRef(index=2, url="https://news.ycombinator.com/item?id=123456", title="Hacker News", tags=("news", "hn")),
-        BookmarkRef(
-            index=3,
-            url="https://a-very-long-bookmark-title-that-goes-on.example.com/some/deep/path/page.html",
-            title="A very long bookmark title that goes on",
-            tags=("docs", "reference", "python"),
-        ),
-    ]
-    sep = len(tui._COL_SEP)
-    for width in (30, 40, 60, 80, 100, 120, 140, 160, 200):
-        title_w, url_w, tags_w = tui._list_columns(refs, width)
-        total = title_w + (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0)
-        assert total <= width - 1, f"width={width}: total={total}"
-        assert title_w >= max(tui._MIN_TITLE_COL, (width - 1) // 2), f"width={width}: title={title_w}"
-
-
-def test_list_columns_wide_terminal_shows_all_columns():
-    """On a wide terminal nothing is shrunk away: all three columns show."""
-    refs = [
-        BookmarkRef(index=1, url="https://github.com", title="GitHub", tags=("git", "tui")),
-        BookmarkRef(index=2, url="https://bank.example.com", title="Bank", tags=("finance",)),
-    ]
-    title_w, url_w, tags_w = tui._list_columns(refs, 160)
-    assert url_w == len("https://bank.example.com")
-    assert tags_w == len("git,tui")
-    assert title_w >= 79
-
-
-def test_draw_list_narrow_terminal_keeps_title_column(tmp_path):
+def test_draw_list_narrow_terminal_nothing_overflows(tmp_path):
     refs = [ref(1, "GitHub", "https://github.com", ("code",))]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.handle_key("i")
     win = StubWindow(height=10, width=30)
     tui._draw_list(win, app)
     # Nothing overflows the screen width.
@@ -270,18 +295,21 @@ def test_draw_list_truncates_long_lines(tmp_path):
     long_title = "A" * 200
     app = make_app(tmp_path, refs=[ref(1, long_title, "https://" + "b" * 100)])
     app.start()
+    app.handle_key("a")
     win = StubWindow(height=24, width=40)
     tui._draw_list(win, app)
     assert len(win.row(2).rstrip()) <= 39
+    assert len(win.row(3).rstrip()) <= 39
 
 
 def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
     refs = [ref(n, f"Item {n:02d}", f"https://item{n}.example") for n in range(1, 31)]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.handle_key("i")
     for _ in range(25):
         app.handle_key("down")
-    win = StubWindow(height=10, width=80)
+    win = StubWindow(height=12, width=80)
     tui._draw_list(win, app)
     # Selected item 25 must be visible; offset must have scrolled.
     text = win.text()
@@ -380,7 +408,7 @@ def test_pty_quit_with_esc(tmp_path):
 
 def test_pty_open_bookmark_and_quit(tmp_path):
     """Enter opens the bookmark and ends the program, like rofi."""
-    rc = _run_in_pty(tmp_path, [b"\r"], [ref(1)])
+    rc = _run_in_pty(tmp_path, [b"i", b"\r"], [ref(1)])
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["1"]
@@ -402,12 +430,30 @@ def test_pty_esc_clears_query_then_quits(tmp_path):
 
 
 def test_pty_ctrl_n_moves_down(tmp_path):
-    # Title-sorted: Bank (index 2) first, GitHub (index 1) second.
+    # Query "it" matches both (GitHub by title, Bank by url); ranked:
+    # GitHub (index 1) first, Bank (index 2) second.
     refs = [ref(1), ref(2, "Bank", "https://bank.example.com")]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r"], refs)
+    rc = _run_in_pty(tmp_path, [b"it", b"\x0e", b"\r"], refs)
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
-    assert opened == ["1"]  # Ctrl+n selected GitHub
+    assert opened == ["2"]  # Ctrl+n selected Bank
+
+
+def test_pty_swedish_characters_in_search(tmp_path):
+    """Typing å/ä/ö must land in the search query (multibyte UTF-8)."""
+    refs = [ref(1, "Räksmörgås", "https://food.example.se", ("mat",)), ref(2, "Bank", "https://bank.example.com")]
+    rc = _run_in_pty(tmp_path, ["räk".encode("utf-8"), b"\r"], refs)
+    assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["1"]  # only Räksmörgås matches "räk"
+
+
+def test_pty_empty_query_opens_nothing(tmp_path):
+    """With an empty search field the list is empty, so Enter is a no-op
+    and Esc quits without opening anything."""
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b"], [ref(1)])
+    assert rc == 0
+    assert not (tmp_path / "cache" / "opened.txt").exists()
 
 
 def test_pty_ctrl_l_quits(tmp_path):

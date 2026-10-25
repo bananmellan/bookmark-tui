@@ -18,15 +18,15 @@ columns are colored when the terminal supports colors.
 from __future__ import annotations
 
 import curses
+import locale
 
 from .app import App, OpenRequested, QuitRequested
 from .models import BookmarkRef
 
-# Column layout caps for the bookmark list.
-_MAX_URL_COL = 48
-_MAX_TAGS_COL = 30
-_MIN_TITLE_COL = 8
-_COL_SEP = "  \u00b7  "
+# Each bookmark renders as a three-line block: title, url, tags.
+_ITEM_HEIGHT = 3
+_LIST_TOP = 2  # first item row (below the header and the prompt)
+_INDENT = "  "
 
 # Color pairs (initialized in _loop when the terminal supports colors).
 _PAIR_TITLE = 1
@@ -99,6 +99,47 @@ def _key_name(ch: int) -> str:
     return ""
 
 
+def _read_key(stdscr) -> str:
+    """Read one key, reassembling multibyte UTF-8 input.
+
+    curses' getch() returns one byte at a time for non-ASCII input, so
+    a character like 'å' (0xC3 0xA5) arrives as two key events. Collect
+    the continuation bytes of a UTF-8 sequence and decode the whole
+    character before handing it to the controller, so search accepts
+    å/ä/ö and any other non-ASCII text.
+
+    A timeout window (set on the window) bounds every read: -1 means
+    "nothing arrived in time", a lone 27 is the Esc key (the escape
+    timeout expired with no sequence bytes), and anything else is either
+    a special key (arrows etc., already decoded by keypad mode) or the
+    start of a UTF-8 sequence.
+    """
+    ch = stdscr.getch()
+    if ch == -1:
+        return ""  # timeout: nothing pressed
+    if not (128 <= ch < 256):
+        return _key_name(ch)
+    raw = bytearray([ch])
+    # A UTF-8 lead byte says how many continuation bytes follow.
+    if ch & 0xE0 == 0xC0:
+        needed = 1
+    elif ch & 0xF0 == 0xE0:
+        needed = 2
+    elif ch & 0xF8 == 0xF0:
+        needed = 3
+    else:
+        return ""  # stray continuation byte: ignore
+    for _ in range(needed):
+        nxt = stdscr.getch()
+        if nxt == -1 or not (128 <= nxt < 256) or nxt & 0xC0 != 0x80:
+            return ""  # malformed or interrupted sequence: drop it
+        raw.append(nxt)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
 def _truncate(text: str, width: int) -> str:
     if width <= 0:
         return ""
@@ -110,62 +151,27 @@ def _truncate(text: str, width: int) -> str:
 
 
 def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
-    """Write text at (y, x), clipped to the screen edge."""
+    """Write text at (y, x), clipped to the screen edge.
+
+    Writing into the bottom-right cell raises curses.error on most
+    terminals (the cursor cannot advance past it), so the clip keeps one
+    cell of margin on the last row.
+    """
     height, width = stdscr.getmaxyx()
     if y < 0 or y >= height or x >= width - 1:
         return
-    stdscr.addnstr(y, x, text, max(0, min(len(text), width - 1 - x)), attr)
-
-
-def _list_columns(refs: list[BookmarkRef], width: int) -> tuple[int, int, int]:
-    """Fixed column widths for the list: (title, url, tags).
-
-    The title column is the primary one: it always gets at least its
-    share of the row (half of the available width, floored at
-    _MIN_TITLE_COL). Url/tags columns are as wide as their widest cell,
-    capped at their max, and shrink first when the row is tight so the
-    title never collapses to a sliver next to a long url.
-    """
-    avail = max(1, width - 1)
-    url_w = min(max((len(r.url) for r in refs), default=0), _MAX_URL_COL)
-    tags_w = min(
-        max((len(",".join(r.tags)) for r in refs if r.tags), default=0),
-        _MAX_TAGS_COL,
-    )
-    sep = len(_COL_SEP)
-    # The title's guaranteed share of the row.
-    title_floor = max(_MIN_TITLE_COL, avail // 2)
-    # What the url/tags columns would like to take (separators included).
-    fixed = (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0)
-    title_w = max(title_floor, avail - fixed)
-    # If the title's share leaves no room for url/tags, shrink them
-    # (tags first, then url) until the row fits. The overflow counts the
-    # trailing separator of a column that ends up empty, so a fully
-    # shrunk column drops its separator too.
-    overflow = title_w + fixed - avail
-    if overflow > 0:
-        shrink = min(tags_w + sep if tags_w else 0, overflow)
-        if shrink >= tags_w + sep:
-            tags_w = 0
-        else:
-            tags_w -= shrink
-        overflow -= shrink
-        if overflow > 0:
-            shrink = min(url_w + sep if url_w else 0, overflow)
-            if shrink >= url_w + sep:
-                url_w = 0
-            else:
-                url_w -= shrink
-            overflow -= shrink
-        title_w = max(_MIN_TITLE_COL, avail - (url_w + sep if url_w else 0)
-                        - (tags_w + sep if tags_w else 0))
-    return title_w, url_w, tags_w
+    last_col = width - 2 if y == height - 1 else width - 1
+    room = max(0, min(len(text), last_col - x))
+    try:
+        stdscr.addnstr(y, x, text, room, attr)
+    except curses.error:
+        pass
 
 
 def _draw_list(stdscr, app: App) -> None:
     screen = app.screen
     height, width = stdscr.getmaxyx()
-    list_height = max(1, height - 3)
+    list_height = max(1, (height - 1 - _LIST_TOP) // _ITEM_HEIGHT)
     app._clamp(screen, list_height)
 
     stdscr.erase()
@@ -178,34 +184,31 @@ def _draw_list(stdscr, app: App) -> None:
     _put(stdscr, 1, 0, _truncate(prompt, width - 1), _pair(_PAIR_PROMPT))
 
     visible = screen.visible
-    title_w, url_w, tags_w = _list_columns(visible, width)
-
     title_attr = _pair(_PAIR_TITLE)
     url_attr = _pair(_PAIR_URL)
     tags_attr = _pair(_PAIR_TAGS)
+    avail = max(1, width - 1 - len(_INDENT))
 
     for row in range(list_height):
         idx = screen.offset + row
         if idx >= len(visible):
             break
         ref = visible[idx]
-        y = 2 + row
+        y = _LIST_TOP + row * _ITEM_HEIGHT
         selected = idx == screen.selected
         base = curses.A_REVERSE if selected else curses.A_NORMAL
 
-        x = 0
-        _put(stdscr, y, x, _truncate(ref.title, title_w).ljust(title_w), base | title_attr)
-        x += title_w
-        if url_w:
-            _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
-            x += len(_COL_SEP)
-            _put(stdscr, y, x, _truncate(ref.url, url_w).ljust(url_w), base | url_attr)
-            x += url_w
-        if tags_w:
-            _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
-            x += len(_COL_SEP)
-            tags = ",".join(ref.tags)
-            _put(stdscr, y, x, _truncate(tags, tags_w), base | tags_attr)
+        _put(stdscr, y, 0, _truncate(ref.title, avail), base | title_attr)
+        _put(stdscr, y + 1, 0, _truncate(_INDENT + ref.url, avail), base | url_attr)
+        tags = ",".join(ref.tags)
+        if tags:
+            _put(stdscr, y + 2, 0, _truncate(_INDENT + tags, avail), base | tags_attr)
+        else:
+            _put(stdscr, y + 2, 0, " " * min(avail, width - 1), base)
+
+    if not screen.query.strip():
+        hint = "type to search bookmarks"
+        _put(stdscr, _LIST_TOP, 0, _truncate(hint, width - 1), curses.A_DIM)
 
     status = f"{len(visible)}/{len(screen.refs)} bookmarks"
     if screen.message:
@@ -219,6 +222,9 @@ def _draw_list(stdscr, app: App) -> None:
 def run(app: App) -> BookmarkRef | None:
     """Run the curses event loop. Returns the bookmark to open, or None
     when the user quit without selecting."""
+    # curses only renders and reads non-ASCII text correctly when the
+    # C locale is set to the user's UTF-8 locale.
+    locale.setlocale(locale.LC_ALL, "")
     app.start()
     return curses.wrapper(_loop, app)
 
@@ -226,14 +232,18 @@ def run(app: App) -> BookmarkRef | None:
 def _loop(stdscr, app: App) -> BookmarkRef | None:
     curses.curs_set(1)
     stdscr.keypad(True)
+    # A short escape timeout disambiguates a lone Esc keypress from an
+    # escape sequence (arrow keys etc.): with keypad(True) curses waits
+    # for the rest of a sequence, but a lone Esc must be delivered
+    # promptly so the user can quit.
+    stdscr.timeout(80)
     _init_colors()
     while True:
         _draw_list(stdscr, app)
         try:
-            ch = stdscr.getch()
+            name = _read_key(stdscr)
         except KeyboardInterrupt:
             return None
-        name = _key_name(ch)
         if not name:
             continue
         try:

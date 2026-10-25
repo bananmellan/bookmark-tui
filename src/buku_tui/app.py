@@ -39,6 +39,11 @@ class ListScreen:
 
     @property
     def visible(self) -> list[BookmarkRef]:
+        # An empty query shows nothing: the list only appears once the
+        # user has typed at least one character (or a clipboard URL was
+        # prefilled at launch).
+        if not self.query.strip():
+            return []
         # While the clipboard-prefilled host is still in the query,
         # filter precisely (substring only) so unrelated bookmarks never
         # appear; once the user edits the query past the host, normal
