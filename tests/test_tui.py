@@ -225,6 +225,37 @@ def test_draw_list_marks_selected_row(tmp_path):
     assert win.cells[(3, 2)][1] & curses.A_NORMAL == 0 or True
 
 
+def test_draw_list_selection_bar_covers_full_row(tmp_path):
+    """The selected row is a solid highlight bar across the whole width,
+    not just behind the text, so the selection stays readable."""
+    import curses
+
+    app = make_app(tmp_path, SAMPLE)
+    app.start()
+    app.handle_key("a")
+    win = StubWindow(width=80)
+    tui._draw_list(win, app)
+    sel = tui._sel_attr()
+    if tui._COLORS_READY:
+        assert sel == tui._pair(tui._PAIR_SELECTED)
+    else:
+        assert sel & curses.A_REVERSE
+    assert win.cells[(3, 2)][1] == sel
+    # Trailing columns of both rows of the selected item carry the bar.
+    for y in (3, 4):
+        for x in (0, 40, 78):
+            assert win.cells[(y, x)][1] == sel
+    # Unselected rows are not highlighted.
+    assert win.cells.get((5, 40), (" ", 0))[1] & curses.A_REVERSE == 0
+
+
+def test_sel_attr_falls_back_to_reverse_without_colors():
+    import curses
+
+    assert tui._COLORS_READY is False
+    assert tui._sel_attr() & curses.A_REVERSE
+
+
 def test_draw_list_status_bar(tmp_path):
     app = make_app(tmp_path, SAMPLE)
     app.start()

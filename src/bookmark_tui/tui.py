@@ -66,12 +66,20 @@ def _init_colors() -> None:
     curses.init_pair(_PAIR_CATEGORY, curses.COLOR_MAGENTA, bg)
     curses.init_pair(_PAIR_PROMPT, curses.COLOR_YELLOW, bg)
     curses.init_pair(_PAIR_DIM, curses.COLOR_CYAN, bg)
-    curses.init_pair(_PAIR_SELECTED, curses.COLOR_GREEN, bg)
+    curses.init_pair(_PAIR_SELECTED, curses.COLOR_BLACK, curses.COLOR_GREEN)
     _COLORS_READY = True
 
 
 def _pair(n: int) -> int:
     return curses.color_pair(n) if _COLORS_READY else 0
+
+
+def _sel_attr() -> int:
+    """Selection highlight: black on green when colors are available,
+    plain reverse video otherwise — high contrast either way."""
+    if _COLORS_READY:
+        return _pair(_PAIR_SELECTED)
+    return curses.A_REVERSE
 
 
 def _key_name(ch: int) -> str:
@@ -201,7 +209,7 @@ def _draw_list(stdscr, app: App) -> None:
         title_attr = _pair(_PAIR_TITLE)
         url_attr = _pair(_PAIR_URL)
         cat_attr = _pair(_PAIR_CATEGORY)
-        sel_attr = curses.A_REVERSE | _pair(_PAIR_SELECTED)
+        sel_attr = _sel_attr()
         avail = max(1, width - 1 - len(_INDENT))
 
         for row in range(list_height):
@@ -210,21 +218,30 @@ def _draw_list(stdscr, app: App) -> None:
                 break
             bm = visible[idx]
             is_selected = idx == screen.selected
-            base_attr = sel_attr if is_selected else curses.A_NORMAL
 
             y_title = _LIST_TOP + row * _ITEM_HEIGHT
             y_url = y_title + 1
 
-            title_text = _truncate(bm.title or bm.url, avail)
-            _put(stdscr, y_title, 2, title_text, base_attr | title_attr)
+            if is_selected:
+                # Paint the selection bar across the full row width so the
+                # highlight reads as a solid bar, not just the text. The
+                # text itself uses the selection pair so it stays readable
+                # (black on green, or reverse video without colors).
+                bar = " " * (width - 1)
+                _put(stdscr, y_title, 0, bar, sel_attr)
+                _put(stdscr, y_url, 0, bar, sel_attr)
+                _put(stdscr, y_title, 2, _truncate(bm.title or bm.url, avail), sel_attr)
+                _put(stdscr, y_url, 2, _truncate(bm.url, avail), sel_attr)
+                if bm.category:
+                    cat_text = _truncate(f"  [{bm.category}]", avail)
+                    _put(stdscr, y_url, max(2, width - len(cat_text) - 1), cat_text, sel_attr)
+                continue
 
-            url_text = _truncate(bm.url, avail)
-            _put(stdscr, y_url, 2, url_text, base_attr | url_attr)
-
+            _put(stdscr, y_title, 2, _truncate(bm.title or bm.url, avail), title_attr)
+            _put(stdscr, y_url, 2, _truncate(bm.url, avail), url_attr)
             if bm.category:
                 cat_text = _truncate(f"  [{bm.category}]", avail)
-                _put(stdscr, y_url, max(2, width - len(cat_text) - 1), cat_text,
-                     base_attr | cat_attr)
+                _put(stdscr, y_url, max(2, width - len(cat_text) - 1), cat_text, cat_attr)
 
     # Status bar
     status = f"{len(visible)}/{len(screen.bookmarks)} bookmarks"

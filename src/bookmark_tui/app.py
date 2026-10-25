@@ -373,11 +373,23 @@ class App:
 
 
 def _default_open_url(url: str) -> None:
-    """Open a URL in the default browser."""
+    """Open a URL in the default browser.
+
+    The opener is started in a new session with no controlling
+    terminal. This runs after the curses UI has exited; when bookmark-tui
+    itself is the session leader (e.g. `ghostty -e bookmark-tui`), the
+    kernel would otherwise deliver SIGHUP to the foreground process group
+    on exit and kill the opener before the browser starts.
+    """
     import sys
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
     if sys.platform == "darwin":
-        subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["open", url], start_new_session=True, **kwargs)
     elif sys.platform == "win32":
-        subprocess.Popen(["cmd", "/c", "start", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["cmd", "/c", "start", url], **kwargs)
     else:
-        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["xdg-open", url], start_new_session=True, **kwargs)

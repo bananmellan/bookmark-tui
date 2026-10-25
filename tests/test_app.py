@@ -507,3 +507,31 @@ def test_full_crud_cycle(tmp_path):
     app.handle_key("d")
     app.handle_key("y")
     assert len(app.store.all) == 0
+
+
+# ------------------------------------------------------------ open url
+
+
+def test_default_open_url_detaches_from_terminal(monkeypatch):
+    """The browser opener must run in its own session with no stdio
+    attached, so it survives bookmark-tui exiting — otherwise launching
+    via `ghostty -e bookmark-tui` kills the opener with SIGHUP."""
+    import bookmark_tui.app as app_mod
+
+    calls = []
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+
+    monkeypatch.setattr(app_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr("sys.platform", "linux")
+    app_mod._default_open_url("https://example.com")
+
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv == ["xdg-open", "https://example.com"]
+    assert kwargs.get("start_new_session") is True
+    assert kwargs.get("stdin") is app_mod.subprocess.DEVNULL
+    assert kwargs.get("stdout") is app_mod.subprocess.DEVNULL
+    assert kwargs.get("stderr") is app_mod.subprocess.DEVNULL
