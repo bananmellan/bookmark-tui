@@ -152,7 +152,7 @@ def test_draw_list_shows_bookmarks_and_prompt(tmp_path):
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
-    assert "code,git" in text
+    assert "code," in text  # tags column (may truncate the last tag)
     assert "2/2 bookmarks" in text
     assert win.refreshed == 1
 
@@ -200,6 +200,59 @@ def test_draw_list_fixed_width_columns(tmp_path):
     assert row_b.index("https://") == row_g.index("https://")
     # Tags columns start at the same offset on every row.
     assert row_b.index("x,y,z") == row_g.index("code")
+
+
+def test_draw_list_title_gets_half_the_row(tmp_path):
+    """The title column must not collapse next to a long url: it gets at
+    least half the row, and the url column shrinks to make room."""
+    refs = [
+        ref(1, "GitHub", "https://github.com/some/really/long/path/that/goes/on"),
+        ref(2, "A much longer bookmark title here", "https://b.example.com", ("tag",)),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    win = StubWindow(height=24, width=80)
+    tui._draw_list(win, app)
+    title_w, url_w, tags_w = tui._list_columns(app.screen.visible, 80)
+    assert title_w >= 79 // 2
+    sep = len(tui._COL_SEP)
+    assert title_w + (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0) <= 79
+    # Every row stays within the screen.
+    for y in range(win.height):
+        assert len(win.row(y).rstrip()) <= 79
+
+
+def test_list_columns_fit_at_every_width():
+    """The three columns always add up to at most the available width,
+    and the title always gets at least half of it."""
+    refs = [
+        BookmarkRef(index=1, url="https://github.com/bananmellan/buku-tui", title="GitHub", tags=("git", "tui", "code")),
+        BookmarkRef(index=2, url="https://news.ycombinator.com/item?id=123456", title="Hacker News", tags=("news", "hn")),
+        BookmarkRef(
+            index=3,
+            url="https://a-very-long-bookmark-title-that-goes-on.example.com/some/deep/path/page.html",
+            title="A very long bookmark title that goes on",
+            tags=("docs", "reference", "python"),
+        ),
+    ]
+    sep = len(tui._COL_SEP)
+    for width in (30, 40, 60, 80, 100, 120, 140, 160, 200):
+        title_w, url_w, tags_w = tui._list_columns(refs, width)
+        total = title_w + (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0)
+        assert total <= width - 1, f"width={width}: total={total}"
+        assert title_w >= max(tui._MIN_TITLE_COL, (width - 1) // 2), f"width={width}: title={title_w}"
+
+
+def test_list_columns_wide_terminal_shows_all_columns():
+    """On a wide terminal nothing is shrunk away: all three columns show."""
+    refs = [
+        BookmarkRef(index=1, url="https://github.com", title="GitHub", tags=("git", "tui")),
+        BookmarkRef(index=2, url="https://bank.example.com", title="Bank", tags=("finance",)),
+    ]
+    title_w, url_w, tags_w = tui._list_columns(refs, 160)
+    assert url_w == len("https://bank.example.com")
+    assert tags_w == len("git,tui")
+    assert title_w >= 79
 
 
 def test_draw_list_narrow_terminal_keeps_title_column(tmp_path):

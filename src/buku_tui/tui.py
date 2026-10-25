@@ -120,8 +120,11 @@ def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
 def _list_columns(refs: list[BookmarkRef], width: int) -> tuple[int, int, int]:
     """Fixed column widths for the list: (title, url, tags).
 
-    Url/tags columns are as wide as their widest cell (capped); the
-    title column takes the remaining space.
+    The title column is the primary one: it always gets at least its
+    share of the row (half of the available width, floored at
+    _MIN_TITLE_COL). Url/tags columns are as wide as their widest cell,
+    capped at their max, and shrink first when the row is tight so the
+    title never collapses to a sliver next to a long url.
     """
     avail = max(1, width - 1)
     url_w = min(max((len(r.url) for r in refs), default=0), _MAX_URL_COL)
@@ -129,12 +132,33 @@ def _list_columns(refs: list[BookmarkRef], width: int) -> tuple[int, int, int]:
         max((len(",".join(r.tags)) for r in refs if r.tags), default=0),
         _MAX_TAGS_COL,
     )
-    fixed = 0
-    if url_w:
-        fixed += url_w + len(_COL_SEP)
-    if tags_w:
-        fixed += tags_w + len(_COL_SEP)
-    title_w = max(_MIN_TITLE_COL, avail - fixed - 1)
+    sep = len(_COL_SEP)
+    # The title's guaranteed share of the row.
+    title_floor = max(_MIN_TITLE_COL, avail // 2)
+    # What the url/tags columns would like to take (separators included).
+    fixed = (url_w + sep if url_w else 0) + (tags_w + sep if tags_w else 0)
+    title_w = max(title_floor, avail - fixed)
+    # If the title's share leaves no room for url/tags, shrink them
+    # (tags first, then url) until the row fits. The overflow counts the
+    # trailing separator of a column that ends up empty, so a fully
+    # shrunk column drops its separator too.
+    overflow = title_w + fixed - avail
+    if overflow > 0:
+        shrink = min(tags_w + sep if tags_w else 0, overflow)
+        if shrink >= tags_w + sep:
+            tags_w = 0
+        else:
+            tags_w -= shrink
+        overflow -= shrink
+        if overflow > 0:
+            shrink = min(url_w + sep if url_w else 0, overflow)
+            if shrink >= url_w + sep:
+                url_w = 0
+            else:
+                url_w -= shrink
+            overflow -= shrink
+        title_w = max(_MIN_TITLE_COL, avail - (url_w + sep if url_w else 0)
+                        - (tags_w + sep if tags_w else 0))
     return title_w, url_w, tags_w
 
 
