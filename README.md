@@ -22,12 +22,21 @@ or Chrome, then search, edit, and open bookmarks from your terminal.
   - **Delete**: press `d` in the detail view, then confirm with `y`
     or `Enter`.
 - **Folder view**: press `Ctrl+f` in the list to browse categories as
-  folders. `Enter` descends into a folder, `Esc` goes up one level (or
-  back to the list), `Ctrl+f` toggles back to the search list. Press
-  `d` on a folder to delete it — this deletes **all bookmarks in that
-  folder and every subfolder** (e.g. deleting `food/recipes` also
-  deletes `food/recipes/vegetarian`), after a confirmation that shows
-  how many bookmarks will be removed.
+  folders. Each folder row shows its bookmark count (including
+  subfolders); bookmarks directly in the current folder are listed
+  below the folders. `Enter` descends into a folder (or opens a
+  bookmark), `Esc` goes up one level (or back to the list), `Ctrl+f`
+  toggles back to the search list. Press `d` on a folder to delete it —
+  this deletes **all bookmarks in that folder and every subfolder**
+  (e.g. deleting `food/recipes` also deletes `food/recipes/vegetarian`),
+  after a confirmation that shows how many bookmarks will be removed.
+  Press `r` on a folder to **rename** it (subfolders move with it).
+  Mark bookmarks with `Space` (or `A` to mark/unmark all in view), then
+  `M` to **move** the marked bookmarks to another folder (empty target
+  = uncategorized). Press `c` on a bookmark to **duplicate** it.
+- **Duplicate**: press `c` in the detail view (or on a bookmark row in
+  the folder view) to open the add form pre-filled with that
+  bookmark's URL, title, and category. Saving creates a new bookmark.
 - **Search persists**: if you search, open a detail, edit, or delete,
   going back returns to the list with your search term intact.
 - After saving an edit or add, you return to the **item overview**
@@ -100,15 +109,26 @@ automatically after import (unless `--no-tui` is given).
 
 ### Folder view
 
-Categories are browsed as folders, one level at a time. Each row shows
-the folder name and how many bookmarks it contains (including
-subfolders).
+Categories are browsed as folders, one level at a time. Each folder row
+shows the folder name and how many bookmarks it contains (including
+subfolders). Bookmarks directly in the current folder are listed below
+the folders (at the root, uncategorized bookmarks show up too).
 
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`, `Ctrl+n`/`Ctrl+p`) move the
   selection.
-- `Enter` descends into the selected folder.
-- `d` deletes the selected folder: **all bookmarks in it and in every
+- `Enter` descends into the selected folder, or opens the selected
+  bookmark's URL and quits.
+- `Ctrl+o` opens the **detail view** for the selected bookmark.
+- `d` on a folder deletes it: **all bookmarks in it and in every
   subfolder** are deleted, after a confirmation showing the count.
+  `d` on a bookmark deletes just that bookmark.
+- `r` on a folder **renames** it — the folder and all its subfolders
+  move to the new name (refused if the target already exists).
+- `Space` marks/unmarks the selected bookmark; `A` marks or unmarks
+  all bookmarks in the current view. `M` **moves** the marked
+  bookmarks to a folder you type (empty target = uncategorized).
+- `c` on a bookmark **duplicates** it: the add form opens pre-filled
+  with its URL, title, and category.
 - `Ctrl+a` or `Tab` opens the **add** form.
 - `Ctrl+f` switches back to the search list.
 - `Esc` goes up one level (or back to the search list at the top).
@@ -118,6 +138,8 @@ subfolders).
 - `Enter` opens the URL in the browser and quits.
 - `e` opens the **edit** form.
 - `d` opens the **delete** confirmation.
+- `c` **duplicates** the bookmark: the add form opens pre-filled with
+  its URL, title, and category; saving creates a new bookmark.
 - `Ctrl+a` opens the **add** form.
 - `Esc` goes back to the list (search term preserved).
 

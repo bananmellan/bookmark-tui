@@ -137,6 +137,49 @@ class BookmarkStore:
             self._save()
         return deleted
 
+    def rename_category(self, old: str, new: str) -> int:
+        """Rename folder `old` to `new`, rewriting the category of every
+        bookmark in `old` and all its subfolders. Returns the number of
+        bookmarks moved. Does nothing (returns 0) when `old` is empty or
+        `new` already exists as a folder or bookmark category."""
+        old = old.strip("/")
+        new = new.strip("/")
+        if not old or not new or old == new:
+            return 0
+        for bm in self._bookmarks:
+            if self.in_category(bm, new):
+                return 0
+        moved = 0
+        for i, bm in enumerate(self._bookmarks):
+            if self.in_category(bm, old):
+                rest = bm.category.strip("/")[len(old):].lstrip("/")
+                self._bookmarks[i] = Bookmark(
+                    id=bm.id,
+                    url=bm.url,
+                    title=bm.title,
+                    category=f"{new}/{rest}" if rest else new,
+                )
+                moved += 1
+        if moved:
+            self._save()
+        return moved
+
+    def move_to_category(self, ids: list[int], category: str) -> int:
+        """Set the category of the given bookmark ids. An empty category
+        uncategorizes them. Returns the number of bookmarks moved."""
+        category = category.strip("/")
+        wanted = set(ids)
+        moved = 0
+        for i, bm in enumerate(self._bookmarks):
+            if bm.id in wanted:
+                self._bookmarks[i] = Bookmark(
+                    id=bm.id, url=bm.url, title=bm.title, category=category
+                )
+                moved += 1
+        if moved:
+            self._save()
+        return moved
+
     def replace_all(self, bookmarks: list[Bookmark]) -> None:
         """Replace the entire bookmark list. Used by import."""
         self._bookmarks = list(bookmarks)

@@ -17,8 +17,10 @@ Key bindings:
 - details: Ctrl+o (in list)
 - add: Ctrl+a or Tab (in list and folder view)
 - edit: e (in detail); delete: d (in detail or folder view)
-- folder view: Ctrl+f (toggle, in list)
-- save: Ctrl+s or Enter on last field (in edit form)
+- duplicate: c (in detail or on a bookmark row in folder view)
+- folder view: Ctrl+f (toggle, in list); r: rename folder;
+  space: mark bookmark; A: mark/unmark all; M: move marked
+- save: Ctrl+s or Enter on last field (in edit form or prompt)
 """
 
 from __future__ import annotations
@@ -34,8 +36,11 @@ from .app import (
     FolderConfirmScreen,
     ListScreen,
     OpenRequested,
+    PromptScreen,
     QuitRequested,
     EDIT_FIELDS,
+    PROMPT_MOVE,
+    PROMPT_RENAME,
     category_count,
 )
 from .models import Bookmark
@@ -269,12 +274,13 @@ def _draw_list(stdscr, app: App) -> None:
 
 
 def _draw_folders(stdscr, app: App) -> None:
-    """Folder/category browser: one row per immediate child folder,
-    with the bookmark count for each (including subfolders)."""
+    """Folder/category browser: immediate child folders first (with
+    bookmark counts including subfolders), then bookmarks directly in
+    this folder. Bookmark rows can be marked for moving."""
     screen = app.screen
     assert isinstance(screen, ListScreen)
     height, width = stdscr.getmaxyx()
-    folders = screen.folders
+    rows = screen.rows
     list_height = max(1, height - 1 - _LIST_TOP)
     app._clamp(screen, list_height)
 
@@ -284,30 +290,69 @@ def _draw_folders(stdscr, app: App) -> None:
                                   width - 1), curses.A_BOLD | _pair(_PAIR_PROMPT))
 
     sel_attr = _sel_attr()
-    if not folders:
-        hint = "no folders — ctrl-a to add a bookmark with a category"
+    if not rows:
+        hint = "empty — ctrl-a to add a bookmark"
         _put_centered(stdscr, _LIST_TOP, hint, curses.A_DIM)
     for row in range(list_height):
         idx = screen.offset + row
-        if idx >= len(folders):
+        if idx >= len(rows):
             break
-        folder = folders[idx]
+        r = rows[idx]
         is_selected = idx == screen.selected
         y = _LIST_TOP + row
-        name = folder.rsplit("/", 1)[-1]
-        count = category_count(screen.bookmarks, folder, app.store)
-        label = f"{name}/  ({count})"
+        if r.kind == "folder":
+            count = category_count(screen.bookmarks, r.folder, app.store)
+            label = f"{r.name}  ({count})"
+            attr = _pair(_PAIR_CATEGORY)
+        else:
+            bm = r.bookmark
+            assert bm is not None
+            mark = "*" if bm.id in screen.marks else " "
+            label = f"{mark} {r.name}"
+            attr = _pair(_PAIR_TITLE)
         if is_selected:
             _put(stdscr, y, 0, " " * (width - 1), sel_attr)
             _put(stdscr, y, 2, _truncate(label, width - 3), sel_attr)
         else:
-            _put(stdscr, y, 2, _truncate(label, width - 3), _pair(_PAIR_CATEGORY))
+            _put(stdscr, y, 2, _truncate(label, width - 3), attr)
 
-    status = f"{len(folders)} folders"
+    n_folders = sum(1 for r in rows if r.kind == "folder")
+    status = f"{n_folders} folders"
+    if screen.marks:
+        status += f"  ·  {len(screen.marks)} marked"
     if screen.message:
         status = f"{screen.message}  —  {status}"
-    status += "  ·  enter: open folder  d: delete folder  ctrl-f: list  ctrl-a: add  esc: back"
+    status += ("  ·  enter: open  ctrl-o: details  d: delete  r: rename folder  "
+               "space: mark  A: mark all  M: move marked  c: duplicate  ctrl-f: list  esc: back")
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+
+
+def _draw_prompt(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, PromptScreen)
+    height, width = stdscr.getmaxyx()
+    app._clamp(screen, 0)
+
+    stdscr.erase()
+    if screen.kind == PROMPT_RENAME:
+        header = f"Rename folder: {screen.folder}"
+        hint = "enter: rename (subfolders move too)  esc: cancel"
+    elif screen.kind == PROMPT_MOVE:
+        header = f"Move {len(screen.marks)} bookmark(s) to folder:"
+        hint = "enter: move (empty = uncategorized)  esc: cancel"
+    else:
+        header = ""
+        hint = "enter: confirm  esc: cancel"
+    _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
+    _put(stdscr, 2, 2, "> ", _pair(_PAIR_PROMPT))
+    _put(stdscr, 2, 4, _truncate(screen.text, width - 5), curses.A_NORMAL)
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+    _put(stdscr, height - 1, 0, _truncate(hint, width - 1), curses.A_DIM)
+
+    cursor_x = 4 + screen.cursor
+    stdscr.move(2, min(cursor_x, width - 1))
+    stdscr.refresh()
 
 
 def _draw_folder_confirm(stdscr, app: App) -> None:
@@ -362,7 +407,7 @@ def _draw_detail(stdscr, app: App) -> None:
 
     if screen.message:
         _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
-    status = "enter: open URL  e: edit  d: delete  ctrl-a: add  esc: back"
+    status = "enter: open URL  e: edit  d: delete  c: duplicate  ctrl-a: add  esc: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.refresh()
 
@@ -454,6 +499,8 @@ def _loop(stdscr, app: App) -> Bookmark | None:
             _draw_confirm(stdscr, app)
         elif isinstance(screen, FolderConfirmScreen):
             _draw_folder_confirm(stdscr, app)
+        elif isinstance(screen, PromptScreen):
+            _draw_prompt(stdscr, app)
         try:
             name = _read_key(stdscr)
         except KeyboardInterrupt:

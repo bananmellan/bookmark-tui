@@ -250,3 +250,86 @@ def test_delete_category_no_match_is_noop(tmp_path):
     deleted = store.delete_category("nonexistent")
     assert deleted == 0
     assert len(store.all) == 1
+
+
+# ------------------------------------------------------------ rename_category / move_to_category
+
+
+def test_rename_category_renames_subfolders(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food/recipes")
+    store.add("https://b.com", "B", "food/recipes/vegan")
+    store.add("https://c.com", "C", "food/soups")
+    store.add("https://d.com", "D", "dev")
+
+    moved = store.rename_category("food/recipes", "food/dishes")
+    assert moved == 2
+    cats = {b.url: b.category for b in store.all}
+    assert cats["https://a.com"] == "food/dishes"
+    assert cats["https://b.com"] == "food/dishes/vegan"
+    assert cats["https://c.com"] == "food/soups"
+    assert cats["https://d.com"] == "dev"
+
+    # Persisted
+    reloaded = BookmarkStore(tmp_path / "bookmarks.json")
+    assert {b.url: b.category for b in reloaded.all} == cats
+
+
+def test_rename_category_top_level(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food/recipes")
+    store.add("https://b.com", "B", "food")
+    moved = store.rename_category("food", "cuisine")
+    assert moved == 2
+    cats = sorted(b.category for b in store.all)
+    assert cats == ["cuisine", "cuisine/recipes"]
+
+
+def test_rename_category_refuses_existing_target(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food/recipes")
+    store.add("https://b.com", "B", "dev")
+    assert store.rename_category("food", "dev") == 0
+    assert {b.url: b.category for b in store.all} == {
+        "https://a.com": "food/recipes",
+        "https://b.com": "dev",
+    }
+
+
+def test_rename_category_noop_cases(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food")
+    assert store.rename_category("", "x") == 0
+    assert store.rename_category("food", "") == 0
+    assert store.rename_category("food", "food") == 0
+    assert store.rename_category("nonexistent", "x") == 0
+    assert [b.category for b in store.all] == ["food"]
+
+
+def test_move_to_category(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    a = store.add("https://a.com", "A", "food")
+    b = store.add("https://b.com", "B", "dev")
+    c = store.add("https://c.com", "C", "food")
+
+    moved = store.move_to_category([a.id, c.id], "archive")
+    assert moved == 2
+    cats = {b.url: b.category for b in store.all}
+    assert cats["https://a.com"] == "archive"
+    assert cats["https://c.com"] == "archive"
+    assert cats["https://b.com"] == "dev"
+
+
+def test_move_to_category_empty_uncategorizes(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    a = store.add("https://a.com", "A", "food")
+    moved = store.move_to_category([a.id], "")
+    assert moved == 1
+    assert store.all[0].category == ""
+
+
+def test_move_to_category_slashes_normalized(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    a = store.add("https://a.com", "A", "food")
+    store.move_to_category([a.id], "/dev/tools/")
+    assert store.all[0].category == "dev/tools"

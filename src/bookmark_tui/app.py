@@ -35,8 +35,22 @@ STAGE_EDIT = "edit"
 STAGE_CONFIRM = "confirm"
 STAGE_FOLDER = "folder"
 STAGE_FOLDER_CONFIRM = "folder_confirm"
+STAGE_PROMPT = "prompt"
 
 EDIT_FIELDS = ["url", "title", "category"]
+
+PROMPT_RENAME = "rename"
+PROMPT_MOVE = "move"
+
+
+@dataclass(frozen=True)
+class FolderRow:
+    """One row in the folder view: either a child folder or a bookmark."""
+
+    kind: str  # "folder" or "bookmark"
+    name: str  # folder path, or bookmark title/url for display
+    folder: str = ""  # set when kind == "folder"
+    bookmark: Bookmark | None = None  # set when kind == "bookmark"
 
 
 def folder_tree(bookmarks: list[Bookmark], root: str = "") -> list[str]:
@@ -73,6 +87,31 @@ def category_count(bookmarks: list[Bookmark], category: str, store: BookmarkStor
     return sum(1 for bm in bookmarks if store.in_category(bm, category))
 
 
+def folder_rows(bookmarks: list[Bookmark], root: str = "") -> list[FolderRow]:
+    """Rows for the folder view at `root`: immediate child folders
+    first (sorted), then bookmarks directly in `root` (sorted by title).
+    At the root, bookmarks with an empty category are included."""
+    prefix = root.strip("/")
+    folders = folder_tree(bookmarks, prefix)
+    rows = [
+        FolderRow(kind="folder", name=f.rsplit("/", 1)[-1] + "/", folder=f)
+        for f in folders
+    ]
+    direct: list[Bookmark] = []
+    for bm in bookmarks:
+        cat = bm.category.strip("/")
+        if prefix:
+            if cat == prefix:
+                direct.append(bm)
+        elif not cat:
+            direct.append(bm)
+    direct.sort(key=lambda b: (b.title.lower(), b.url.lower()))
+    rows.extend(
+        FolderRow(kind="bookmark", name=bm.title or bm.url, bookmark=bm) for bm in direct
+    )
+    return rows
+
+
 @dataclass
 class ListScreen:
     stage: str = STAGE_LIST
@@ -83,6 +122,11 @@ class ListScreen:
     message: str = ""
     folder_mode: bool = False
     folder_path: str = ""
+    marks: set[int] = field(default_factory=set)  # marked bookmark ids
+    # Where to return after detail/edit/confirm when opened from folder view
+    from_folder: bool = False
+    from_folder_path: str = ""
+    from_folder_selected: int = 0
 
     @property
     def visible(self) -> list[Bookmark]:
@@ -100,6 +144,14 @@ class ListScreen:
         return folder_tree(self.bookmarks, self.folder_path)
 
     @property
+    def rows(self) -> list[FolderRow]:
+        """Folder-view rows at folder_path: child folders, then bookmarks
+        directly in this folder (folder mode only)."""
+        if not self.folder_mode:
+            return []
+        return folder_rows(self.bookmarks, self.folder_path)
+
+    @property
     def selected_bookmark(self) -> Bookmark | None:
         visible = self.visible
         if 0 <= self.selected < len(visible):
@@ -113,6 +165,17 @@ class ListScreen:
             return folders[self.selected]
         return None
 
+    @property
+    def selected_row(self) -> FolderRow | None:
+        rows = self.rows
+        if 0 <= self.selected < len(rows):
+            return rows[self.selected]
+        return None
+
+    @property
+    def marked_bookmarks(self) -> list[Bookmark]:
+        return [bm for bm in self.bookmarks if bm.id in self.marks]
+
 
 @dataclass
 class DetailScreen:
@@ -121,6 +184,9 @@ class DetailScreen:
     list_query: str = ""
     list_selected: int = 0
     message: str = ""
+    from_folder: bool = False
+    from_folder_path: str = ""
+    from_folder_selected: int = 0
 
 
 @dataclass
@@ -133,6 +199,9 @@ class EditScreen:
     list_query: str = ""
     list_selected: int = 0
     message: str = ""
+    from_folder: bool = False
+    from_folder_path: str = ""
+    from_folder_selected: int = 0
 
     @property
     def current_field(self) -> str:
@@ -155,6 +224,9 @@ class ConfirmScreen:
     list_query: str = ""
     list_selected: int = 0
     message: str = ""
+    from_folder: bool = False
+    from_folder_path: str = ""
+    from_folder_selected: int = 0
 
 
 @dataclass
@@ -167,7 +239,23 @@ class FolderConfirmScreen:
     message: str = ""
 
 
-Screen = ListScreen | DetailScreen | EditScreen | ConfirmScreen | FolderConfirmScreen
+@dataclass
+class PromptScreen:
+    """Free-text prompt: rename a folder, or pick a target folder for
+    moving marked bookmarks."""
+
+    stage: str = STAGE_PROMPT
+    kind: str = ""  # PROMPT_RENAME or PROMPT_MOVE
+    text: str = ""
+    cursor: int = 0
+    folder: str = ""  # folder being renamed (PROMPT_RENAME)
+    folder_path: str = ""  # current folder (return context)
+    marks: set[int] = field(default_factory=set)  # bookmarks to move (PROMPT_MOVE)
+    selected: int = 0
+    message: str = ""
+
+
+Screen = ListScreen | DetailScreen | EditScreen | ConfirmScreen | FolderConfirmScreen | PromptScreen
 
 
 class OpenRequested(Exception):
@@ -197,6 +285,7 @@ class App:
         message: str = "",
         folder_mode: bool = False,
         folder_path: str = "",
+        marks: set[int] | None = None,
     ) -> ListScreen:
         screen = ListScreen(
             bookmarks=self.store.all,
@@ -205,26 +294,90 @@ class App:
             message=message,
             folder_mode=folder_mode,
             folder_path=folder_path,
+            marks=marks if marks is not None else set(),
         )
         self.screen = screen
         return screen
 
-    def _detail_screen(self, bm: Bookmark, list_query: str = "", list_selected: int = 0) -> DetailScreen:
-        screen = DetailScreen(bookmark=bm, list_query=list_query, list_selected=list_selected)
+    def _folder_screen(
+        self,
+        folder_path: str = "",
+        selected: int = 0,
+        message: str = "",
+        marks: set[int] | None = None,
+    ) -> ListScreen:
+        return self._list_screen(
+            folder_mode=True,
+            folder_path=folder_path,
+            selected=selected,
+            message=message,
+            marks=marks,
+        )
+
+    def _detail_screen(
+        self,
+        bm: Bookmark,
+        list_query: str = "",
+        list_selected: int = 0,
+        from_folder: bool = False,
+        from_folder_path: str = "",
+        from_folder_selected: int = 0,
+    ) -> DetailScreen:
+        screen = DetailScreen(
+            bookmark=bm,
+            list_query=list_query,
+            list_selected=list_selected,
+            from_folder=from_folder,
+            from_folder_path=from_folder_path,
+            from_folder_selected=from_folder_selected,
+        )
         self.screen = screen
         return screen
 
-    def _start_edit(self, bm: Bookmark | None, list_query: str = "", list_selected: int = 0) -> EditScreen:
+    def _start_edit(
+        self,
+        bm: Bookmark | None,
+        list_query: str = "",
+        list_selected: int = 0,
+        from_folder: bool = False,
+        from_folder_path: str = "",
+        from_folder_selected: int = 0,
+    ) -> EditScreen:
         if bm is None:
             values = {"url": "", "title": "", "category": ""}
             screen = EditScreen(editing_id=None, values=values, cursor=0,
-                                list_query=list_query, list_selected=list_selected)
+                                list_query=list_query, list_selected=list_selected,
+                                from_folder=from_folder, from_folder_path=from_folder_path,
+                                from_folder_selected=from_folder_selected)
         else:
             values = {"url": bm.url, "title": bm.title, "category": bm.category}
             screen = EditScreen(editing_id=bm.id, values=values, cursor=len(values["url"]),
-                                list_query=list_query, list_selected=list_selected)
+                                list_query=list_query, list_selected=list_selected,
+                                from_folder=from_folder, from_folder_path=from_folder_path,
+                                from_folder_selected=from_folder_selected)
         self.screen = screen
         return screen
+
+    def _return_screen(
+        self,
+        query: str = "",
+        selected: int = 0,
+        message: str = "",
+        from_folder: bool = False,
+        from_folder_path: str = "",
+        from_folder_selected: int = 0,
+        marks: set[int] | None = None,
+    ) -> ListScreen:
+        """Return to wherever the user came from: the search list, or the
+        folder view if the action started there."""
+        if from_folder:
+            return self._folder_screen(
+                folder_path=from_folder_path,
+                selected=from_folder_selected,
+                message=message,
+                marks=marks,
+            )
+        return self._list_screen(query=query, selected=selected, message=message)
 
     def _save_edit(self) -> Screen:
         screen = self.screen
@@ -237,15 +390,42 @@ class App:
             return screen
         if screen.is_new:
             bm = self.store.add(url, title, category)
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected,
-                                     message=f"Added: {title or url}")
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                message=f"Added: {title or url}",
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
         else:
             self.store.update(screen.editing_id, url, title, category)
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected,
-                                     message=f"Updated: {title or url}")
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                message=f"Updated: {title or url}",
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
 
-    def _confirm_delete(self, bm: Bookmark, list_query: str = "", list_selected: int = 0) -> ConfirmScreen:
-        screen = ConfirmScreen(bookmark=bm, list_query=list_query, list_selected=list_selected)
+    def _confirm_delete(
+        self,
+        bm: Bookmark,
+        list_query: str = "",
+        list_selected: int = 0,
+        from_folder: bool = False,
+        from_folder_path: str = "",
+        from_folder_selected: int = 0,
+    ) -> ConfirmScreen:
+        screen = ConfirmScreen(
+            bookmark=bm,
+            list_query=list_query,
+            list_selected=list_selected,
+            from_folder=from_folder,
+            from_folder_path=from_folder_path,
+            from_folder_selected=from_folder_selected,
+        )
         self.screen = screen
         return screen
 
@@ -253,11 +433,23 @@ class App:
         screen = self.screen
         assert isinstance(screen, ConfirmScreen)
         if screen.bookmark is None:
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
         bm = screen.bookmark
         self.store.delete(bm.id)
-        return self._list_screen(query=screen.list_query, selected=screen.list_selected,
-                                 message=f"Deleted: {bm.title or bm.url}")
+        return self._return_screen(
+            query=screen.list_query,
+            selected=screen.list_selected,
+            message=f"Deleted: {bm.title or bm.url}",
+            from_folder=screen.from_folder,
+            from_folder_path=screen.from_folder_path,
+            from_folder_selected=screen.from_folder_selected,
+        )
 
     def _confirm_delete_folder(self, folder: str, parent_path: str = "") -> FolderConfirmScreen:
         count = category_count(self.store.all, folder, self.store)
@@ -269,8 +461,37 @@ class App:
         screen = self.screen
         assert isinstance(screen, FolderConfirmScreen)
         deleted = self.store.delete_category(screen.folder)
-        return self._list_screen(folder_mode=True, folder_path=screen.folder_path,
-                                 message=f"Deleted folder: {screen.folder} ({deleted} bookmarks)")
+        return self._folder_screen(
+            folder_path=screen.folder_path,
+            message=f"Deleted folder: {screen.folder} ({deleted} bookmarks)",
+        )
+
+    def _finish_rename(self, old: str, new: str, folder_path: str) -> Screen:
+        new = new.strip("/")
+        if not new:
+            return self._folder_screen(
+                folder_path=folder_path, message="Rename cancelled: empty name"
+            )
+        moved = self.store.rename_category(old, new)
+        if moved == 0:
+            return self._folder_screen(
+                folder_path=folder_path,
+                message=f"Could not rename {old}: no such folder or {new} already exists",
+            )
+        return self._folder_screen(
+            folder_path=folder_path,
+            message=f"Renamed {old} -> {new} ({moved} bookmarks)",
+        )
+
+    def _finish_move(self, ids: list[int], target: str, folder_path: str, marks: set[int]) -> Screen:
+        target = target.strip("/")
+        moved = self.store.move_to_category(ids, target)
+        marks = marks - set(ids)
+        return self._folder_screen(
+            folder_path=folder_path,
+            message=f"Moved {moved} bookmark(s) to {target or '(uncategorized)'}",
+            marks=marks,
+        )
 
     # ------------------------------------------------------------ launch
 
@@ -293,11 +514,13 @@ class App:
             return self._handle_confirm_key(key)
         if isinstance(screen, FolderConfirmScreen):
             return self._handle_folder_confirm_key(key)
+        if isinstance(screen, PromptScreen):
+            return self._handle_prompt_key(key)
         return screen
 
     def _clamp(self, screen: Screen, height: int) -> None:
         if isinstance(screen, ListScreen):
-            items = screen.folders if screen.folder_mode else screen.visible
+            items = screen.rows if screen.folder_mode else screen.visible
             if screen.selected >= len(items):
                 screen.selected = max(0, len(items) - 1)
             if screen.selected < 0:
@@ -307,6 +530,11 @@ class App:
                     screen.offset = screen.selected
                 elif screen.selected >= screen.offset + height:
                     screen.offset = screen.selected - height + 1
+        elif isinstance(screen, PromptScreen):
+            if screen.cursor > len(screen.text):
+                screen.cursor = len(screen.text)
+            if screen.cursor < 0:
+                screen.cursor = 0
         elif isinstance(screen, EditScreen):
             if screen.field_idx >= len(EDIT_FIELDS):
                 screen.field_idx = len(EDIT_FIELDS) - 1
@@ -379,44 +607,160 @@ class App:
     def _handle_folder_key(self, key: str) -> Screen:
         screen = self.screen
         assert isinstance(screen, ListScreen)
-        folders = screen.folders
+        rows = screen.rows
+        row = screen.selected_row
+
         if key == "enter":
-            folder = screen.selected_folder
-            if folder is None:
+            if row is None:
                 return screen
-            return self._list_screen(folder_mode=True, folder_path=folder, selected=0)
+            if row.kind == "folder":
+                return self._folder_screen(folder_path=row.folder, selected=0)
+            if row.bookmark is not None:
+                raise OpenRequested(row.bookmark)
+            return screen
+        if key == "ctrl_o":
+            if row is not None and row.kind == "bookmark" and row.bookmark is not None:
+                return self._detail_screen(
+                    row.bookmark,
+                    from_folder=True,
+                    from_folder_path=screen.folder_path,
+                    from_folder_selected=screen.selected,
+                )
+            return screen
         if key == "esc":
             if screen.folder_path:
                 parent = screen.folder_path.rsplit("/", 1)[0] if "/" in screen.folder_path else ""
-                return self._list_screen(folder_mode=True, folder_path=parent, selected=0)
+                return self._folder_screen(folder_path=parent, selected=0, marks=screen.marks)
             return self._list_screen(query=screen.query, selected=0)
         if key == "ctrl_f":
             return self._list_screen(query=screen.query, selected=0)
         if key == "d":
-            folder = screen.selected_folder
-            if folder is None:
+            if row is None:
                 return screen
-            return self._confirm_delete_folder(folder, parent_path=screen.folder_path)
+            if row.kind == "folder":
+                return self._confirm_delete_folder(row.folder, parent_path=screen.folder_path)
+            if row.bookmark is not None:
+                return self._confirm_delete(
+                    row.bookmark,
+                    from_folder=True,
+                    from_folder_path=screen.folder_path,
+                    from_folder_selected=screen.selected,
+                )
+            return screen
+        if key == "r":
+            if row is not None and row.kind == "folder":
+                return self._start_prompt(PROMPT_RENAME, folder=row.folder,
+                                          folder_path=screen.folder_path)
+            return screen
+        if key == " ":
+            # toggle mark on a bookmark row
+            if row is not None and row.kind == "bookmark" and row.bookmark is not None:
+                if row.bookmark.id in screen.marks:
+                    screen.marks.discard(row.bookmark.id)
+                else:
+                    screen.marks.add(row.bookmark.id)
+            return screen
+        if key == "A":
+            # toggle: mark all bookmarks in this folder, or clear all marks
+            bm_ids = {r.bookmark.id for r in rows if r.kind == "bookmark" and r.bookmark}
+            if bm_ids and bm_ids <= screen.marks:
+                screen.marks -= bm_ids
+            else:
+                screen.marks |= bm_ids
+            return screen
+        if key == "M":
+            if not screen.marks:
+                screen.message = "No bookmarks marked (space to mark)"
+                return screen
+            return self._start_prompt(PROMPT_MOVE, folder_path=screen.folder_path)
+        if key == "c":
+            # duplicate: open the add form pre-filled with the bookmark's data
+            if row is not None and row.kind == "bookmark" and row.bookmark is not None:
+                bm = row.bookmark
+                values = {"url": bm.url, "title": bm.title, "category": bm.category}
+                screen = EditScreen(
+                    editing_id=None,  # duplicate => new bookmark
+                    values=values,
+                    cursor=len(values["url"]),
+                    from_folder=True,
+                    from_folder_path=screen.folder_path,
+                    from_folder_selected=screen.selected,
+                )
+                self.screen = screen
+                return screen
+            return screen
         if key == "ctrl_a" or key == "tab":
-            return self._start_edit(None, list_query=screen.query, list_selected=screen.selected)
+            return self._start_edit(
+                None,
+                from_folder=True,
+                from_folder_path=screen.folder_path,
+                from_folder_selected=screen.selected,
+            )
         if key == "up":
             screen.selected = max(0, screen.selected - 1)
             return screen
         if key == "down":
-            screen.selected = min(max(0, len(folders) - 1), screen.selected + 1)
+            screen.selected = min(max(0, len(rows) - 1), screen.selected + 1)
             return screen
         if key == "pageup":
             screen.selected = max(0, screen.selected - 10)
             return screen
         if key == "pagedown":
-            screen.selected = min(max(0, len(folders) - 1), screen.selected + 10)
+            screen.selected = min(max(0, len(rows) - 1), screen.selected + 10)
             return screen
         if key == "home":
             screen.selected = 0
             return screen
         if key == "end":
-            screen.selected = max(0, len(folders) - 1)
+            screen.selected = max(0, len(rows) - 1)
             return screen
+        return screen
+
+    def _handle_prompt_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, PromptScreen)
+        if key == "esc":
+            return self._folder_screen(folder_path=screen.folder_path)
+        if key == "enter":
+            if screen.kind == PROMPT_RENAME:
+                return self._finish_rename(screen.folder, screen.text, screen.folder_path)
+            if screen.kind == PROMPT_MOVE:
+                ids = [bm.id for bm in self.store.all if bm.id in screen.marks]
+                return self._finish_move(ids, screen.text, screen.folder_path, screen.marks)
+            return self._folder_screen(folder_path=screen.folder_path)
+        if key == "backspace":
+            if screen.cursor > 0:
+                screen.text = screen.text[: screen.cursor - 1] + screen.text[screen.cursor:]
+                screen.cursor -= 1
+            return screen
+        if key == "left":
+            screen.cursor = max(0, screen.cursor - 1)
+            return screen
+        if key == "right":
+            screen.cursor = min(len(screen.text), screen.cursor + 1)
+            return screen
+        if key == "home":
+            screen.cursor = 0
+            return screen
+        if key == "end":
+            screen.cursor = len(screen.text)
+            return screen
+        if len(key) == 1 and key.isprintable():
+            screen.text = screen.text[:screen.cursor] + key + screen.text[screen.cursor:]
+            screen.cursor += 1
+            return screen
+        return screen
+
+    def _start_prompt(self, kind: str, folder: str = "", folder_path: str = "") -> PromptScreen:
+        marks: set[int] = set()
+        if kind == PROMPT_MOVE:
+            current = self.screen
+            if isinstance(current, ListScreen):
+                marks = set(current.marks)
+        initial = folder.rsplit("/", 1)[-1] if folder else ""
+        screen = PromptScreen(kind=kind, text=initial, cursor=len(initial),
+                              folder=folder, folder_path=folder_path, marks=marks)
+        self.screen = screen
         return screen
 
     def _handle_folder_confirm_key(self, key: str) -> Screen:
@@ -425,7 +769,7 @@ class App:
         if key in ("y", "enter"):
             return self._do_delete_folder()
         if key in ("n", "esc"):
-            return self._list_screen(folder_mode=True, folder_path=screen.folder_path)
+            return self._folder_screen(folder_path=screen.folder_path)
         if key == "left":
             screen.selected = 0
             return screen
@@ -438,7 +782,13 @@ class App:
         screen = self.screen
         assert isinstance(screen, DetailScreen)
         if key == "esc":
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
         if key == "enter":
             if screen.bookmark is not None:
                 raise OpenRequested(screen.bookmark)
@@ -447,13 +797,37 @@ class App:
             if screen.bookmark is not None:
                 return self._start_edit(screen.bookmark,
                                         list_query=screen.list_query,
-                                        list_selected=screen.list_selected)
+                                        list_selected=screen.list_selected,
+                                        from_folder=screen.from_folder,
+                                        from_folder_path=screen.from_folder_path,
+                                        from_folder_selected=screen.from_folder_selected)
             return screen
         if key == "d":
             if screen.bookmark is not None:
                 return self._confirm_delete(screen.bookmark,
                                             list_query=screen.list_query,
-                                            list_selected=screen.list_selected)
+                                            list_selected=screen.list_selected,
+                                            from_folder=screen.from_folder,
+                                            from_folder_path=screen.from_folder_path,
+                                            from_folder_selected=screen.from_folder_selected)
+            return screen
+        if key == "c":
+            # duplicate: add form pre-filled with this bookmark's data
+            if screen.bookmark is not None:
+                bm = screen.bookmark
+                values = {"url": bm.url, "title": bm.title, "category": bm.category}
+                edit = EditScreen(
+                    editing_id=None,
+                    values=values,
+                    cursor=len(values["url"]),
+                    list_query=screen.list_query,
+                    list_selected=screen.list_selected,
+                    from_folder=screen.from_folder,
+                    from_folder_path=screen.from_folder_path,
+                    from_folder_selected=screen.from_folder_selected,
+                )
+                self.screen = edit
+                return edit
             return screen
         if key == "ctrl_a":
             return self._start_edit(None, list_query=screen.list_query, list_selected=screen.list_selected)
@@ -463,7 +837,13 @@ class App:
         screen = self.screen
         assert isinstance(screen, EditScreen)
         if key == "esc":
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
         if key == "up":
             if screen.field_idx > 0:
                 screen.field_idx -= 1
@@ -510,7 +890,13 @@ class App:
         if key in ("y", "enter"):
             return self._do_delete()
         if key in ("n", "esc"):
-            return self._list_screen(query=screen.list_query, selected=screen.list_selected)
+            return self._return_screen(
+                query=screen.list_query,
+                selected=screen.list_selected,
+                from_folder=screen.from_folder,
+                from_folder_path=screen.from_folder_path,
+                from_folder_selected=screen.from_folder_selected,
+            )
         if key == "left":
             screen.selected = 0
             return screen

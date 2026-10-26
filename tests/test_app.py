@@ -692,3 +692,288 @@ def test_category_count(tmp_path):
     assert category_count(store.all, "dev", store) == 2
     assert category_count(store.all, "finance", store) == 1
     assert category_count(store.all, "nope", store) == 0
+
+
+# ------------------------------------------------------------ folder rows, marks, rename, move, duplicate
+
+
+def test_folder_rows_mix_folders_and_bookmarks(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    rows = app.screen.rows
+    kinds = [r.kind for r in rows]
+    # top level: folders dev, finance, food + uncategorized bookmark
+    assert kinds == ["folder", "folder", "folder", "bookmark"]
+    assert rows[0].folder == "dev"
+    assert rows[-1].bookmark.title == "NoCat"
+
+
+def test_folder_rows_in_folder_show_direct_bookmarks(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")
+    app.handle_key("enter")  # into food
+    rows = app.screen.rows
+    assert [r.kind for r in rows] == ["folder", "folder"]
+    app.handle_key("enter")  # into food/recipes
+    rows = app.screen.rows
+    assert [r.kind for r in rows] == ["folder", "bookmark"]
+    assert rows[0].folder == "food/recipes/vegan"
+    assert rows[1].bookmark.title == "Pasta"
+
+
+def test_folder_enter_on_bookmark_opens_url(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    # navigate to the uncategorized bookmark (last row)
+    for _ in range(3):
+        app.handle_key("down")
+    with pytest.raises(OpenRequested) as exc:
+        app.handle_key("enter")
+    assert exc.value.bookmark.url == "https://example.com"
+
+
+def test_folder_ctrl_o_opens_detail_and_returns(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")
+    app.handle_key("enter")  # into food
+    app.handle_key("enter")  # into food/recipes
+    app.handle_key("down")  # onto Pasta bookmark row
+    app.handle_key("ctrl_o")
+    assert isinstance(app.screen, DetailScreen)
+    assert app.screen.from_folder is True
+    assert app.screen.from_folder_path == "food/recipes"
+    app.handle_key("esc")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "food/recipes"
+
+
+def test_folder_edit_and_save_returns_to_folder(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # onto GitLab bookmark row
+    app.handle_key("ctrl_o")
+    app.handle_key("e")
+    assert isinstance(app.screen, EditScreen)
+    app.handle_key("ctrl_s")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "dev"
+    assert "Updated: GitLab" in app.screen.message
+
+
+def test_folder_delete_bookmark_returns_to_folder(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # GitLab row
+    app.handle_key("d")
+    assert isinstance(app.screen, ConfirmScreen)
+    app.handle_key("y")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "dev"
+    assert "Deleted: GitLab" in app.screen.message
+    assert all(b.title != "GitLab" for b in app.store.all)
+
+
+def test_folder_mark_toggle_and_move(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # GitLab row
+    app.handle_key(" ")  # mark GitLab
+    assert app.screen.marks
+    gitlab = next(b for b in app.store.all if b.title == "GitLab")
+    assert gitlab.id in app.screen.marks
+    app.handle_key(" ")  # unmark
+    assert not app.screen.marks
+
+
+def test_folder_mark_all_and_move(tmp_path):
+    from bookmark_tui.app import PromptScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")
+    app.handle_key("enter")  # into food
+    app.handle_key("enter")  # into food/recipes -> rows: vegan folder, Pasta bookmark
+    app.handle_key("down")  # Pasta
+    app.handle_key(" ")  # mark Pasta
+    app.handle_key("M")
+    screen = app.screen
+    assert isinstance(screen, PromptScreen)
+    assert screen.kind == "move"
+    for ch in "dev":
+        app.handle_key(ch)
+    # text is now "dev" (initial text was empty)
+    app.handle_key("enter")
+    assert app.screen.folder_mode is True
+    pasta = next(b for b in app.store.all if b.title == "Pasta")
+    assert pasta.category == "dev"
+    assert not app.screen.marks  # marks cleared after move
+
+
+def test_folder_mark_all_toggle(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev -> rows: tools folder, GitLab bookmark
+    app.handle_key("A")  # mark all bookmarks in view (GitLab)
+    gitlab = next(b for b in app.store.all if b.title == "GitLab")
+    assert app.screen.marks == {gitlab.id}
+    app.handle_key("A")  # unmark all
+    assert app.screen.marks == set()
+
+
+def test_folder_move_without_marks_shows_message(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("M")
+    assert app.screen.folder_mode is True
+    assert "No bookmarks marked" in app.screen.message
+
+
+def test_folder_move_to_empty_uncategorizes(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # GitLab
+    app.handle_key(" ")
+    app.handle_key("M")
+    app.handle_key("enter")  # empty target
+    gitlab = next(b for b in app.store.all if b.title == "GitLab")
+    assert gitlab.category == ""
+
+
+def test_folder_rename_flow(tmp_path):
+    from bookmark_tui.app import PromptScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")  # food
+    app.handle_key("r")
+    screen = app.screen
+    assert isinstance(screen, PromptScreen)
+    assert screen.kind == "rename"
+    assert screen.text == "food"  # pre-filled with current name
+    assert screen.folder == "food"
+    # clear and type new name
+    for _ in range(4):
+        app.handle_key("backspace")
+    for ch in "cuisine":
+        app.handle_key(ch)
+    app.handle_key("enter")
+    assert app.screen.folder_mode is True
+    assert "Renamed food -> cuisine" in app.screen.message
+    cats = {b.title: b.category for b in app.store.all}
+    assert cats["Pasta"] == "cuisine/recipes"
+    assert cats["Cake"] == "cuisine/recipes/vegan"
+    assert cats["Soup"] == "cuisine/soups"
+
+
+def test_folder_rename_to_existing_fails(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")  # rename dev
+    for _ in range(3):
+        app.handle_key("backspace")
+    for ch in "food":
+        app.handle_key(ch)
+    app.handle_key("enter")
+    assert "Could not rename" in app.screen.message
+    cats = {b.title: b.category for b in app.store.all}
+    assert cats["GitHub"] == "dev/tools"  # unchanged
+
+
+def test_folder_rename_empty_cancels(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")
+    for _ in range(3):
+        app.handle_key("backspace")
+    app.handle_key("enter")
+    assert "empty name" in app.screen.message
+
+
+def test_folder_rename_esc_cancels(tmp_path):
+    from bookmark_tui.app import PromptScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")
+    assert isinstance(app.screen, PromptScreen)
+    app.handle_key("esc")
+    assert app.screen.folder_mode is True
+    assert all(b.category for b in app.store.all if b.title != "NoCat")
+
+
+def test_duplicate_from_detail_opens_prefilled_add(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app(tmp_path, SAMPLE)
+    app.start()
+    app.handle_key("g")
+    app.handle_key("ctrl_o")
+    app.handle_key("c")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.is_new  # duplicate creates a new bookmark
+    assert screen.values["url"] == "https://github.com"
+    assert screen.values["title"] == "GitHub"
+    assert screen.values["category"] == "dev/tools"
+    # save creates a second bookmark
+    app.handle_key("ctrl_s")
+    urls = [b.url for b in app.store.all]
+    assert urls.count("https://github.com") == 2
+    assert "Added: GitHub" in app.screen.message
+
+
+def test_duplicate_from_folder_view(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # GitLab row
+    app.handle_key("c")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.is_new
+    assert screen.values["url"] == "https://gitlab.com"
+    assert screen.from_folder is True
+    app.handle_key("ctrl_s")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "dev"
+    assert len([b for b in app.store.all if b.url == "https://gitlab.com"]) == 2
+
+
+def test_prompt_editing_keys(tmp_path):
+    from bookmark_tui.app import PromptScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")  # rename dev, text prefilled "dev"
+    app.handle_key("home")
+    app.handle_key("x")
+    assert app.screen.text == "xdev"
+    app.handle_key("end")
+    app.handle_key("backspace")
+    assert app.screen.text == "xde"
+    app.handle_key("left")
+    app.handle_key("y")
+    assert app.screen.text == "xdy e".replace(" ", "")

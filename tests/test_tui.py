@@ -631,7 +631,7 @@ def test_draw_folder_view_lists_top_level(tmp_path):
     assert "finance/  (1)" in text
     assert "food/  (3)" in text
     assert "folders" in text
-    assert "d: delete folder" in text
+    assert "d: delete" in text
 
 
 def test_draw_folder_view_descend_shows_children(tmp_path):
@@ -662,13 +662,34 @@ def test_draw_folder_view_marks_selected(tmp_path):
     assert win.cells[(3, 40)][1] == sel  # bar covers full row
 
 
-def test_draw_folder_view_empty(tmp_path):
+def test_draw_folder_view_root_shows_uncategorized(tmp_path):
+    """At the root, bookmarks with no category appear as rows."""
     app = make_app(tmp_path, [bm(1, "NoCat", "https://x.com", "")])
     app.start()
     app.handle_key("ctrl_f")
     win = StubWindow()
     tui._draw_list(win, app)
-    assert "no folders" in win.text()
+    assert "NoCat" in win.text()
+
+
+def test_draw_folder_view_empty(tmp_path):
+    app = make_app(tmp_path, [bm(1, "Categorized", "https://x.com", "dev")])
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev — contains only a bookmark... wait, dev has one
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "Categorized" in text  # bookmark directly in dev shows as a row
+
+
+def test_draw_folder_view_truly_empty(tmp_path):
+    app = make_app(tmp_path, [])
+    app.start()
+    app.handle_key("ctrl_f")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert "empty" in win.text()
 
 
 def test_draw_folder_confirm(tmp_path):
@@ -733,3 +754,231 @@ def test_pty_folder_view_and_delete(tmp_path):
         "https://gitlab.com",
         "https://soup.example.com",
     ]
+
+
+# ------------------------------------------------------------ folder rows / marks / prompt rendering
+
+
+def test_draw_folder_view_shows_bookmark_rows(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")
+    app.handle_key("enter")  # into food
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "recipes/  (2)" in text
+    assert "soups/  (1)" in text
+
+
+def test_draw_folder_view_marks(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev -> rows: tools/ folder, GitLab bookmark
+    app.handle_key("down")  # GitLab row
+    app.handle_key(" ")  # mark
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "* GitLab" in text
+    assert "1 marked" in text
+
+
+def test_draw_folder_view_marked_count_in_status(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("A")  # mark all (no bookmarks at top... folders only) -> no marks
+    # descend into dev where a bookmark row exists
+    app.handle_key("enter")
+    app.handle_key("A")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert "1 marked" in win.text()
+
+
+def test_draw_prompt_rename(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")
+    win = StubWindow()
+    tui._draw_prompt(win, app)
+    text = win.text()
+    assert "Rename folder: dev" in text
+    assert "> dev" in text
+    assert "subfolders move too" in text
+
+
+def test_draw_prompt_move(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    app.handle_key("down")  # GitLab
+    app.handle_key(" ")
+    app.handle_key("M")
+    win = StubWindow()
+    tui._draw_prompt(win, app)
+    text = win.text()
+    assert "Move 1 bookmark(s) to folder:" in text
+    assert "empty = uncategorized" in text
+
+
+def test_draw_prompt_cursor_position(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("r")  # text "dev", cursor at end (3)
+    win = StubWindow()
+    tui._draw_prompt(win, app)
+    assert win.cursor == (2, 4 + 3)
+
+
+def test_pty_folder_view_bookmark_rows_and_marks(tmp_path):
+    """End-to-end: folder view shows bookmark rows; enter on a bookmark
+    opens its URL and quits."""
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in FOLDER_SAMPLE_TUI:
+        store.add(b.url, b.title, b.category)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_STORE"] = str(store_path)
+    env["BOOKMARK_TUI_OPENED"] = str(tmp_path / "opened.txt")
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        # ctrl-f, enter into dev, down onto GitLab row, enter -> open URL
+        for keys in (b"\x06", b"\r", b"\x0e", b"\r"):
+            time.sleep(0.2)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    assert (tmp_path / "opened.txt").read_text() == "https://gitlab.com"
+
+
+def test_pty_folder_rename_and_move(tmp_path):
+    """End-to-end: rename food -> cuisine, then mark Pasta and move it
+    to dev through the real UI."""
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in FOLDER_SAMPLE_TUI:
+        store.add(b.url, b.title, b.category)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_STORE"] = str(store_path)
+    env["BOOKMARK_TUI_OPENED"] = str(tmp_path / "opened.txt")
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        # Clear "food" with 4 backspaces, type "cuisine", enter.
+        # After the rename the top-level order is cuisine, dev, finance,
+        # so cuisine is already selected — no down needed. Inside cuisine
+        # the first row is recipes/; entering it shows vegan/ + Pasta,
+        # and one down lands on the Pasta bookmark row.
+        script = [
+            b"\x06", b"\x0e", b"\x0e", b"r",
+            b"\x7f\x7f\x7f\x7f", b"cuisine", b"\r",
+            b"\r",              # enter into cuisine
+            b"\r",              # enter into recipes (first row)
+            b"\x0e",            # down onto the Pasta bookmark row
+            b" ",               # mark Pasta
+            b"M",               # move prompt
+            b"dev", b"\r",      # target dev, confirm
+            b"\x1b", b"\x1b", b"\x1b", b"\x1b",  # up, up, list, quit
+        ]
+        for keys in script:
+            time.sleep(0.25)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    store = BookmarkStore(store_path)
+    cats = {b.title: b.category for b in store.all}
+    # The rename rewrote the whole food/ subtree.
+    assert cats["Cake"] == "cuisine/recipes/vegan"
+    assert cats["Soup"] == "cuisine/soups"
+    # The marked bookmark (a bookmark row in cuisine/recipes) moved to dev.
+    moved = [t for t, c in cats.items() if c == "dev"]
+    assert len(moved) == 2  # GitLab was already in dev + the moved one
+    assert cats["Pasta"] == "dev"
+
+
+def test_pty_duplicate_from_detail(tmp_path):
+    """End-to-end: search, open detail, c to duplicate, Ctrl+S to save —
+    a second bookmark with the same URL exists afterwards."""
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in SAMPLE:
+        store.add(b.url, b.title, b.category)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_STORE"] = str(store_path)
+    env["BOOKMARK_TUI_OPENED"] = str(tmp_path / "opened.txt")
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        for keys in (b"g", b"\x0f", b"c", b"\x13", b"\x1b", b"\x1b", b"\x1b"):
+            time.sleep(0.2)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    store = BookmarkStore(store_path)
+    assert len([b for b in store.all if b.url == "https://github.com"]) == 2
