@@ -37,7 +37,8 @@ or Chrome, then search, edit, and open bookmarks from your terminal.
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
 - A terminal with curses support
-- `xdg-open` (Linux), `open` (macOS), or `start` (Windows) for opening URLs
+- `xdg-open` (Linux), `open` (macOS), `start` (Windows), or
+  `termux-open-url` (Termux/Android) for opening URLs
 
 ## Install
 

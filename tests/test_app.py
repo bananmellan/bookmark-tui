@@ -512,7 +512,22 @@ def test_full_crud_cycle(tmp_path):
 # ------------------------------------------------------------ open url
 
 
-def test_default_open_url_detaches_from_terminal(monkeypatch):
+@pytest.mark.parametrize(
+    "platform,prefix_env,expected_argv,detached",
+    [
+        ("linux", {}, ["xdg-open", "https://example.com"], True),
+        ("darwin", {}, ["open", "https://example.com"], True),
+        ("win32", {}, ["cmd", "/c", "start", "https://example.com"], False),
+        # Termux reports linux, but must use termux-open-url
+        ("linux", {"PREFIX": "/data/data/com.termux/files/usr"}, ["termux-open-url", "https://example.com"], True),
+        ("linux", {"TERMUX_VERSION": "0.118"}, ["termux-open-url", "https://example.com"], True),
+        # Termux wins even on other platforms
+        ("darwin", {"PREFIX": "/data/data/com.termux/files/usr"}, ["termux-open-url", "https://example.com"], True),
+    ],
+)
+def test_default_open_url_detaches_from_terminal(
+    monkeypatch, platform, prefix_env, expected_argv, detached
+):
     """The browser opener must run in its own session with no stdio
     attached, so it survives bookmark-tui exiting — otherwise launching
     via `ghostty -e bookmark-tui` kills the opener with SIGHUP."""
@@ -525,13 +540,17 @@ def test_default_open_url_detaches_from_terminal(monkeypatch):
             calls.append((argv, kwargs))
 
     monkeypatch.setattr(app_mod.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.delenv("PREFIX", raising=False)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    for key, value in prefix_env.items():
+        monkeypatch.setenv(key, value)
     app_mod._default_open_url("https://example.com")
 
     assert len(calls) == 1
     argv, kwargs = calls[0]
-    assert argv == ["xdg-open", "https://example.com"]
-    assert kwargs.get("start_new_session") is True
+    assert argv == expected_argv
+    assert bool(kwargs.get("start_new_session")) is detached
     assert kwargs.get("stdin") is app_mod.subprocess.DEVNULL
     assert kwargs.get("stdout") is app_mod.subprocess.DEVNULL
     assert kwargs.get("stderr") is app_mod.subprocess.DEVNULL

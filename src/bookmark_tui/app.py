@@ -372,6 +372,14 @@ class App:
         return screen
 
 
+def _is_termux() -> bool:
+    """Detect the Termux environment (Android terminal emulator)."""
+    import os
+
+    prefix = os.environ.get("PREFIX", "")
+    return "com.termux" in prefix or "TERMUX_VERSION" in os.environ
+
+
 def _default_open_url(url: str) -> None:
     """Open a URL in the default browser.
 
@@ -387,7 +395,9 @@ def _default_open_url(url: str) -> None:
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
     }
-    if sys.platform == "darwin":
+    if _is_termux():
+        subprocess.Popen(["termux-open-url", url], start_new_session=True, **kwargs)
+    elif sys.platform == "darwin":
         subprocess.Popen(["open", url], start_new_session=True, **kwargs)
     elif sys.platform == "win32":
         subprocess.Popen(["cmd", "/c", "start", url], **kwargs)
