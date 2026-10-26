@@ -362,6 +362,10 @@ def _loop(stdscr, app: App) -> Bookmark | None:
     curses.curs_set(1)
     stdscr.keypad(True)
     stdscr.nodelay(False)
+    # curses.cbreak() leaves the terminal's IXON software flow control
+    # enabled, so the tty swallows Ctrl+S as XOFF and freezes all output.
+    # raw() disables IXON/IXOFF (and ISIG) so control keys reach the app.
+    curses.raw()
     _init_colors()
     while True:
         screen = app.screen

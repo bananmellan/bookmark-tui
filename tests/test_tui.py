@@ -500,6 +500,69 @@ def test_pty_ctrl_l_quits(tmp_path):
     assert rc == 0
 
 
+def test_pty_ctrl_s_saves_edit_without_freezing(tmp_path):
+    """Regression test: Ctrl+S in the edit form must reach the app.
+
+    curses.cbreak() leaves the tty's IXON flow control enabled, so the
+    terminal swallows Ctrl+S as XOFF and freezes all output — the UI
+    hangs until force-killed. _loop must use curses.raw() so the key
+    arrives.
+    """
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in SAMPLE:
+        store.add(b.url, b.title, b.category)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_STORE"] = str(store_path)
+    env["BOOKMARK_TUI_OPENED"] = str(tmp_path / "opened.txt")
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    output = b""
+    try:
+        import select
+        for keys in (b"g", b"\x0f", b"e", b"x", b"\x13"):  # search, detail, edit, type, Ctrl+S
+            time.sleep(0.2)
+            os.write(master, keys)
+        # Ctrl+S must save and return to the list; if XOFF froze the tty
+        # there is no output. Watch for the list redraw for up to 5s.
+        deadline = time.time() + 5
+        while time.time() < deadline and b"Updated:" not in output:
+            r, _, _ = select.select([master], [], [], 0.1)
+            if r:
+                try:
+                    output += os.read(master, 65536)
+                except OSError:
+                    break
+        assert b"Updated:" in output, "Ctrl+S did not save — tty froze on XOFF"
+        # The UI must still be alive: Esc goes back / quits.
+        for keys in (b"\x1b", b"\x1b", b"\x1b"):
+            time.sleep(0.2)
+            os.write(master, keys)
+        deadline = time.time() + 5
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit after save+esc"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    store = BookmarkStore(store_path)
+    assert any(b.url == "https://github.comx" for b in store.all)
+
+
 def test_pty_ctrl_c_quits(tmp_path):
     import signal
 
