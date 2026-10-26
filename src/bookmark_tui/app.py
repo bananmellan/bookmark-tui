@@ -25,9 +25,11 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 
+from .clipboard import extract_url, read_clipboard
 from .models import Bookmark
 from .search import filter_bookmarks
 from .storage import BookmarkStore
+from .webfetch import fetch_title
 
 STAGE_LIST = "list"
 STAGE_DETAIL = "detail"
@@ -36,6 +38,7 @@ STAGE_CONFIRM = "confirm"
 STAGE_FOLDER = "folder"
 STAGE_FOLDER_CONFIRM = "folder_confirm"
 STAGE_PROMPT = "prompt"
+STAGE_FETCH_TITLE = "fetch_title"
 
 EDIT_FIELDS = ["url", "title", "category"]
 
@@ -255,7 +258,32 @@ class PromptScreen:
     message: str = ""
 
 
-Screen = ListScreen | DetailScreen | EditScreen | ConfirmScreen | FolderConfirmScreen | PromptScreen
+@dataclass
+class FetchTitleScreen:
+    """Confirmation shown when the clipboard holds a URL and the user is
+    adding a bookmark: offer to prefill the URL and fetch the page
+    title."""
+
+    stage: str = STAGE_FETCH_TITLE
+    url: str = ""
+    selected: int = 0  # 0 = yes, 1 = no
+    list_query: str = ""
+    list_selected: int = 0
+    from_folder: bool = False
+    from_folder_path: str = ""
+    from_folder_selected: int = 0
+    message: str = ""
+
+
+Screen = (
+    ListScreen
+    | DetailScreen
+    | EditScreen
+    | ConfirmScreen
+    | FolderConfirmScreen
+    | PromptScreen
+    | FetchTitleScreen
+)
 
 
 class OpenRequested(Exception):
@@ -271,9 +299,17 @@ class QuitRequested(Exception):
 
 
 class App:
-    def __init__(self, store: BookmarkStore, open_url=None) -> None:
+    def __init__(
+        self,
+        store: BookmarkStore,
+        open_url=None,
+        read_clipboard_fn=None,
+        fetch_title_fn=None,
+    ) -> None:
         self.store = store
         self._open_url = open_url or _default_open_url
+        self._read_clipboard = read_clipboard_fn or read_clipboard
+        self._fetch_title = fetch_title_fn or fetch_title
         self.screen: Screen = ListScreen()
 
     # ------------------------------------------------------------ helpers
@@ -516,6 +552,8 @@ class App:
             return self._handle_folder_confirm_key(key)
         if isinstance(screen, PromptScreen):
             return self._handle_prompt_key(key)
+        if isinstance(screen, FetchTitleScreen):
+            return self._handle_fetch_title_key(key)
         return screen
 
     def _clamp(self, screen: Screen, height: int) -> None:
@@ -596,7 +634,7 @@ class App:
                 screen.offset = 0
             return screen
         if key == "ctrl_a" or key == "tab":
-            return self._start_edit(None, list_query=screen.query, list_selected=screen.selected)
+            return self._start_add(list_query=screen.query, list_selected=screen.selected)
         if len(key) == 1 and key.isprintable():
             screen.query += key
             screen.selected = 0
@@ -690,8 +728,7 @@ class App:
                 return screen
             return screen
         if key == "ctrl_a" or key == "tab":
-            return self._start_edit(
-                None,
+            return self._start_add(
                 from_folder=True,
                 from_folder_path=screen.folder_path,
                 from_folder_selected=screen.selected,
@@ -748,6 +785,64 @@ class App:
         if len(key) == 1 and key.isprintable():
             screen.text = screen.text[:screen.cursor] + key + screen.text[screen.cursor:]
             screen.cursor += 1
+            return screen
+        return screen
+
+    def _start_add(self, list_query: str = "", list_selected: int = 0,
+                   from_folder: bool = False, from_folder_path: str = "",
+                   from_folder_selected: int = 0) -> Screen:
+        """Open the add form. When the clipboard holds a URL, first ask
+        whether to prefill it and fetch the page title."""
+        clip_url = extract_url(self._read_clipboard())
+        if clip_url:
+            screen = FetchTitleScreen(
+                url=clip_url,
+                list_query=list_query,
+                list_selected=list_selected,
+                from_folder=from_folder,
+                from_folder_path=from_folder_path,
+                from_folder_selected=from_folder_selected,
+            )
+            self.screen = screen
+            return screen
+        return self._open_add_with_url("", list_query, list_selected,
+                                       from_folder, from_folder_path, from_folder_selected)
+
+    def _open_add_with_url(self, url: str, list_query: str, list_selected: int,
+                           from_folder: bool, from_folder_path: str,
+                           from_folder_selected: int) -> EditScreen:
+        """Open the add form with the URL field prefilled."""
+        values = {"url": url, "title": "", "category": ""}
+        screen = EditScreen(editing_id=None, values=values, cursor=len(url),
+                            list_query=list_query, list_selected=list_selected,
+                            from_folder=from_folder, from_folder_path=from_folder_path,
+                            from_folder_selected=from_folder_selected)
+        self.screen = screen
+        return screen
+
+    def _handle_fetch_title_key(self, key: str) -> Screen:
+        screen = self.screen
+        assert isinstance(screen, FetchTitleScreen)
+        if key == "esc" or key == "n":
+            return self._open_add_with_url(
+                screen.url, screen.list_query, screen.list_selected,
+                screen.from_folder, screen.from_folder_path, screen.from_folder_selected,
+            )
+        if key in ("y", "enter"):
+            title = self._fetch_title(screen.url) or ""
+            values = {"url": screen.url, "title": title, "category": ""}
+            edit = EditScreen(editing_id=None, values=values, cursor=len(screen.url),
+                              list_query=screen.list_query, list_selected=screen.list_selected,
+                              from_folder=screen.from_folder,
+                              from_folder_path=screen.from_folder_path,
+                              from_folder_selected=screen.from_folder_selected)
+            self.screen = edit
+            return edit
+        if key == "left":
+            screen.selected = 0
+            return screen
+        if key == "right":
+            screen.selected = 1
             return screen
         return screen
 
@@ -830,7 +925,7 @@ class App:
                 return edit
             return screen
         if key == "ctrl_a":
-            return self._start_edit(None, list_query=screen.list_query, list_selected=screen.list_selected)
+            return self._start_add(list_query=screen.list_query, list_selected=screen.list_selected)
         return screen
 
     def _handle_edit_key(self, key: str) -> Screen:

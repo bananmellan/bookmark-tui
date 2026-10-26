@@ -977,3 +977,191 @@ def test_prompt_editing_keys(tmp_path):
     app.handle_key("left")
     app.handle_key("y")
     assert app.screen.text == "xdy e".replace(" ", "")
+
+
+# ------------------------------------------------------------ clipboard autofill + title fetch
+
+
+def make_app_with_clip(tmp_path, bookmarks, clipboard_text, fetched_title="Fetched Title"):
+    """App with a fake clipboard and a fake title fetcher."""
+    store = make_store(tmp_path, bookmarks)
+    opened = []
+    app = App(
+        store,
+        open_url=lambda url: opened.append(url),
+        read_clipboard_fn=lambda: clipboard_text,
+        fetch_title_fn=lambda url: fetched_title,
+    )
+    app._opened = opened
+    return app
+
+
+def test_add_with_clipboard_url_prompts_for_fetch(tmp_path):
+    from bookmark_tui.app import FetchTitleScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com/page")
+    app.start()
+    app.handle_key("ctrl_a")
+    screen = app.screen
+    assert isinstance(screen, FetchTitleScreen)
+    assert screen.url == "https://clipped.example.com/page"
+
+
+def test_add_with_clipboard_url_yes_fetches_title(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com/page",
+                             fetched_title="Clipped Page")
+    app.start()
+    app.handle_key("ctrl_a")
+    app.handle_key("y")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.is_new
+    assert screen.values["url"] == "https://clipped.example.com/page"
+    assert screen.values["title"] == "Clipped Page"
+
+
+def test_add_with_clipboard_url_enter_fetches_title(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("ctrl_a")
+    app.handle_key("enter")
+    assert isinstance(app.screen, EditScreen)
+    assert app.screen.values["title"] == "Fetched Title"
+
+
+def test_add_with_clipboard_url_no_prefills_url_only(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com/page")
+    app.start()
+    app.handle_key("ctrl_a")
+    app.handle_key("n")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.values["url"] == "https://clipped.example.com/page"
+    assert screen.values["title"] == ""
+
+
+def test_add_with_clipboard_url_esc_prefills_url_only(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com/page")
+    app.start()
+    app.handle_key("ctrl_a")
+    app.handle_key("esc")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.values["url"] == "https://clipped.example.com/page"
+    assert screen.values["title"] == ""
+
+
+def test_add_fetch_failure_leaves_title_empty(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://down.example.com",
+                             fetched_title=None)
+    app.start()
+    app.handle_key("ctrl_a")
+    app.handle_key("y")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.values["url"] == "https://down.example.com"
+    assert screen.values["title"] == ""
+
+
+def test_add_without_clipboard_url_opens_blank_form(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "not a url at all")
+    app.start()
+    app.handle_key("ctrl_a")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.values["url"] == ""
+    assert screen.values["title"] == ""
+
+
+def test_add_with_empty_clipboard_opens_blank_form(tmp_path):
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "")
+    app.start()
+    app.handle_key("ctrl_a")
+    assert isinstance(app.screen, EditScreen)
+    assert app.screen.values["url"] == ""
+
+
+def test_add_with_schemeless_clipboard_url_normalized(tmp_path):
+    from bookmark_tui.app import FetchTitleScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "example.com/some/page")
+    app.start()
+    app.handle_key("ctrl_a")
+    screen = app.screen
+    assert isinstance(screen, FetchTitleScreen)
+    assert screen.url == "https://example.com/some/page"
+
+
+def test_add_from_folder_view_clipboard_prompt(tmp_path):
+    from bookmark_tui.app import EditScreen, FetchTitleScreen
+    app = make_app_with_clip(tmp_path, FOLDER_SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("ctrl_a")
+    screen = app.screen
+    assert isinstance(screen, FetchTitleScreen)
+    assert screen.from_folder is True
+    app.handle_key("y")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.values["url"] == "https://clipped.example.com"
+    assert screen.values["title"] == "Fetched Title"
+    # save returns to the folder view
+    app.handle_key("ctrl_s")
+    assert app.screen.folder_mode is True
+    assert any(b.url == "https://clipped.example.com" for b in app.store.all)
+
+
+def test_add_from_detail_clipboard_prompt(tmp_path):
+    from bookmark_tui.app import FetchTitleScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("g")
+    app.handle_key("ctrl_o")
+    app.handle_key("ctrl_a")
+    assert isinstance(app.screen, FetchTitleScreen)
+    assert app.screen.list_query == "g"
+
+
+def test_fetch_title_toggle_yes_no(tmp_path):
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("ctrl_a")
+    assert app.screen.selected == 0
+    app.handle_key("right")
+    assert app.screen.selected == 1
+    app.handle_key("left")
+    assert app.screen.selected == 0
+
+
+def test_edit_does_not_trigger_clipboard_prompt(tmp_path):
+    """Editing an existing bookmark must not pop the clipboard prompt."""
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("g")
+    app.handle_key("ctrl_o")
+    app.handle_key("e")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert not screen.is_new
+    assert screen.values["url"] == "https://github.com"
+
+
+def test_duplicate_does_not_trigger_clipboard_prompt(tmp_path):
+    """Duplicating pre-fills from the bookmark, not the clipboard."""
+    from bookmark_tui.app import EditScreen
+    app = make_app_with_clip(tmp_path, SAMPLE, "https://clipped.example.com")
+    app.start()
+    app.handle_key("g")
+    app.handle_key("ctrl_o")
+    app.handle_key("c")
+    screen = app.screen
+    assert isinstance(screen, EditScreen)
+    assert screen.is_new
+    assert screen.values["url"] == "https://github.com"

@@ -33,6 +33,7 @@ from .app import (
     ConfirmScreen,
     DetailScreen,
     EditScreen,
+    FetchTitleScreen,
     FolderConfirmScreen,
     ListScreen,
     OpenRequested,
@@ -331,6 +332,27 @@ def _draw_folders(stdscr, app: App) -> None:
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
 
 
+def _draw_fetch_title(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, FetchTitleScreen)
+    height, width = stdscr.getmaxyx()
+
+    stdscr.erase()
+    _put(stdscr, 0, 0, "Clipboard contains a URL:", curses.A_BOLD)
+    _put(stdscr, 1, 0, _truncate(screen.url, width - 1), _pair(_PAIR_URL))
+
+    _put(stdscr, 3, 2, "Prefill it and fetch the page title?", curses.A_NORMAL)
+    yes_attr = curses.A_REVERSE if screen.selected == 0 else curses.A_NORMAL
+    no_attr = curses.A_REVERSE if screen.selected == 1 else curses.A_NORMAL
+    _put(stdscr, 5, 4, "Yes", yes_attr)
+    _put(stdscr, 5, 12, "No", no_attr)
+
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+    _put(stdscr, height - 1, 0, _truncate("enter/y: yes  n/esc: no (URL still prefilled)  ←→: select", width - 1), curses.A_DIM)
+    stdscr.refresh()
+
+
 def _draw_prompt(stdscr, app: App) -> None:
     screen = app.screen
     assert isinstance(screen, PromptScreen)
@@ -505,6 +527,8 @@ def _loop(stdscr, app: App) -> Bookmark | None:
             _draw_folder_confirm(stdscr, app)
         elif isinstance(screen, PromptScreen):
             _draw_prompt(stdscr, app)
+        elif isinstance(screen, FetchTitleScreen):
+            _draw_fetch_title(stdscr, app)
         try:
             name = _read_key(stdscr)
         except KeyboardInterrupt:

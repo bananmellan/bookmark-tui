@@ -1007,3 +1007,102 @@ def test_pty_duplicate_from_detail(tmp_path):
     assert proc.returncode == 0
     store = BookmarkStore(store_path)
     assert len([b for b in store.all if b.url == "https://github.com"]) == 2
+
+
+# ------------------------------------------------------------ fetch-title prompt rendering
+
+
+def test_draw_fetch_title_prompt(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    for b in SAMPLE:
+        store.add(b.url, b.title, b.category)
+    app = App(store, open_url=lambda url: None,
+              read_clipboard_fn=lambda: "https://clipped.example.com/page",
+              fetch_title_fn=lambda url: "Clipped")
+    app.start()
+    app.handle_key("ctrl_a")
+    win = StubWindow()
+    tui._draw_fetch_title(win, app)
+    text = win.text()
+    assert "Clipboard contains a URL:" in text
+    assert "https://clipped.example.com/page" in text
+    assert "Prefill it and fetch the page title?" in text
+    assert "Yes" in text
+    assert "No" in text
+
+
+def test_draw_fetch_title_selected_highlight(tmp_path):
+    import curses
+
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    for b in SAMPLE:
+        store.add(b.url, b.title, b.category)
+    app = App(store, open_url=lambda url: None,
+              read_clipboard_fn=lambda: "https://clipped.example.com",
+              fetch_title_fn=lambda url: "x")
+    app.start()
+    app.handle_key("ctrl_a")
+    win = StubWindow()
+    tui._draw_fetch_title(win, app)
+    assert win.cells[(5, 4)][1] & curses.A_REVERSE
+    app.handle_key("right")
+    win = StubWindow()
+    tui._draw_fetch_title(win, app)
+    assert win.cells[(5, 12)][1] & curses.A_REVERSE
+
+
+def test_pty_add_with_clipboard_url_fetches_title(tmp_path):
+    """End-to-end: clipboard holds a URL (via env override), Ctrl+A pops
+    the fetch-title prompt, y confirms, the add form is prefilled with
+    URL + fetched title, Ctrl+S saves."""
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in SAMPLE:
+        store.add(b.url, b.title, b.category)
+
+    # Fake clipboard via env override and fake fetcher via a sitecustomize
+    # shim: the pty child reads BOOKMARK_TUI_CLIPBOARD_CMD, and we patch
+    # fetch_title through a small wrapper module.
+    wrapper = tmp_path / "wrapper.py"
+    wrapper.write_text(
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "import bookmark_tui.webfetch as wf\n"
+        "wf.fetch_title = lambda url: 'Pty Fetched Title'\n"
+        "from bookmark_tui.cli import main\n"
+        "sys.exit(main(['--store', %r]))\n"
+        % (str(Path(__file__).resolve().parent.parent / "src"), str(store_path))
+    )
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_CLIPBOARD_CMD"] = "echo https://pty-clipped.example.com/page"
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, str(wrapper)],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        for keys in (b"\x01", b"y", b"\x13", b"\x1b", b"\x1b", b"\x1b"):
+            time.sleep(0.25)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    store = BookmarkStore(store_path)
+    added = [b for b in store.all if b.url == "https://pty-clipped.example.com/page"]
+    assert len(added) == 1
+    assert added[0].title == "Pty Fetched Title"

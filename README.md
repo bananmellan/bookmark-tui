@@ -15,6 +15,9 @@ or Chrome, then search, edit, and open bookmarks from your terminal.
 - **Full editing** within the interface:
   - **Add**: `Ctrl+a` or `Tab` opens a blank form. Fill in URL, title,
     and category. Save with `Ctrl+s` or `Tab` on the last field.
+    If the clipboard holds a URL, the add form first asks whether to
+    prefill it and fetch the page title — **Yes** fills in the URL and
+    the fetched `<title>`, **No**/**Esc** fills in just the URL.
   - **Edit**: press `e` in the detail view to edit any bookmark.
     Navigate fields with `↑`/`↓`/`Tab`. Move the cursor with
     `←`/`→`, `Home`/`End`. Delete with `Backspace`. Save with `Ctrl+s`
@@ -143,6 +146,20 @@ the folders (at the root, uncategorized bookmarks show up too).
 - `Ctrl+a` opens the **add** form.
 - `Esc` goes back to the list (search term preserved).
 
+### Clipboard autofill prompt (add only)
+
+When you open the add form (`Ctrl+a`/`Tab`) and the clipboard contains
+a URL, a prompt asks whether to prefill it and fetch the page title:
+
+- `y` or `Enter` — prefill the URL and fetch the page's `<title>`
+  (fetched with a short timeout; on failure the title is left empty).
+- `n` or `Esc` — prefill just the URL, no fetch.
+- `←`/`→` toggles between Yes and No.
+
+Scheme-less clipboard content like `example.com/page` is normalized to
+`https://example.com/page`. Editing or duplicating a bookmark never
+triggers this prompt.
+
 ### Edit / Add form
 
 - `↑`/`↓` or `Tab` moves between fields (URL → Title → Category).
@@ -163,6 +180,7 @@ the folders (at the root, uncategorized bookmarks show up too).
 | --- | --- | --- |
 | `XDG_DATA_HOME` | `~/.local/share` | Base directory for the bookmark store |
 | `--store PATH` | `$XDG_DATA_HOME/bookmark-tui/bookmarks.json` | Custom store file path |
+| `BOOKMARK_TUI_CLIPBOARD_CMD` | _(auto-detect)_ | Shell command whose stdout is used as the clipboard content (overrides `termux-clipboard-get` / `pbpaste` / `wl-paste` / `xclip` / `xsel`) |
 
 ## Data model
 
