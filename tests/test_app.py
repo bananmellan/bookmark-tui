@@ -554,3 +554,141 @@ def test_default_open_url_detaches_from_terminal(
     assert kwargs.get("stdin") is app_mod.subprocess.DEVNULL
     assert kwargs.get("stdout") is app_mod.subprocess.DEVNULL
     assert kwargs.get("stderr") is app_mod.subprocess.DEVNULL
+
+
+# ------------------------------------------------------------ folder view
+
+
+FOLDER_SAMPLE = [
+    ("https://github.com", "GitHub", "dev/tools"),
+    ("https://gitlab.com", "GitLab", "dev"),
+    ("https://bank.example.com", "Bank", "finance"),
+    ("https://pasta.example.com", "Pasta", "food/recipes"),
+    ("https://cake.example.com", "Cake", "food/recipes/vegan"),
+    ("https://soup.example.com", "Soup", "food/soups"),
+    ("https://example.com", "NoCat", ""),
+]
+
+
+def test_folder_tree_top_level(tmp_path):
+    from bookmark_tui.app import folder_tree
+    store = make_store(tmp_path, FOLDER_SAMPLE)
+    assert folder_tree(store.all) == ["dev", "finance", "food"]
+
+
+def test_folder_tree_second_level(tmp_path):
+    from bookmark_tui.app import folder_tree
+    store = make_store(tmp_path, FOLDER_SAMPLE)
+    assert folder_tree(store.all, "food") == ["food/recipes", "food/soups"]
+    assert folder_tree(store.all, "food/recipes") == ["food/recipes/vegan"]
+    assert folder_tree(store.all, "dev") == ["dev/tools"]
+    assert folder_tree(store.all, "finance") == []
+
+
+def test_ctrl_f_enters_folder_mode(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    assert isinstance(app.screen, ListScreen)
+    assert app.screen.folder_mode is True
+    assert app.screen.folders == ["dev", "finance", "food"]
+
+
+def test_folder_mode_enter_descends(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")  # finance
+    app.handle_key("down")  # food
+    app.handle_key("enter")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "food"
+    assert app.screen.folders == ["food/recipes", "food/soups"]
+
+
+def test_folder_mode_esc_goes_up_then_to_list(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev
+    assert app.screen.folder_path == "dev"
+    app.handle_key("esc")  # back to top level
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == ""
+    app.handle_key("esc")  # back to search list
+    assert app.screen.folder_mode is False
+
+
+def test_folder_mode_ctrl_f_returns_to_list(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("ctrl_f")
+    assert app.screen.folder_mode is False
+
+
+def test_folder_mode_search_list_unaffected(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    # In folder mode there is no query filtering of bookmarks
+    assert app.screen.visible == []
+
+
+def test_folder_delete_flow(tmp_path):
+    from bookmark_tui.app import FolderConfirmScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")  # finance
+    app.handle_key("down")  # food
+    app.handle_key("enter")  # into food
+    app.handle_key("d")  # delete food/recipes (first)
+    screen = app.screen
+    assert isinstance(screen, FolderConfirmScreen)
+    assert screen.folder == "food/recipes"
+    assert screen.count == 2  # pasta + cake
+    app.handle_key("y")
+    assert app.screen.folder_mode is True
+    assert app.screen.folder_path == "food"
+    assert "Deleted folder: food/recipes (2 bookmarks)" in app.screen.message
+    urls = sorted(b.url for b in app.store.all)
+    assert "https://pasta.example.com" not in urls
+    assert "https://cake.example.com" not in urls
+    assert "https://soup.example.com" in urls
+    assert "https://github.com" in urls
+
+
+def test_folder_delete_cancel_keeps_bookmarks(tmp_path):
+    from bookmark_tui.app import FolderConfirmScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("d")  # delete dev (first)
+    assert isinstance(app.screen, FolderConfirmScreen)
+    app.handle_key("n")
+    assert app.screen.folder_mode is True
+    assert len(app.store.all) == 7
+
+
+def test_folder_confirm_toggle_yes_no(tmp_path):
+    from bookmark_tui.app import FolderConfirmScreen
+    app = make_app(tmp_path, FOLDER_SAMPLE)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("d")
+    assert app.screen.selected == 0
+    app.handle_key("right")
+    assert app.screen.selected == 1
+    app.handle_key("left")
+    assert app.screen.selected == 0
+
+
+def test_category_count(tmp_path):
+    from bookmark_tui.app import category_count
+    store = make_store(tmp_path, FOLDER_SAMPLE)
+    assert category_count(store.all, "food", store) == 3
+    assert category_count(store.all, "food/recipes", store) == 2
+    assert category_count(store.all, "dev", store) == 2
+    assert category_count(store.all, "finance", store) == 1
+    assert category_count(store.all, "nope", store) == 0

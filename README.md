@@ -21,6 +21,13 @@ or Chrome, then search, edit, and open bookmarks from your terminal.
     or `Tab` on the last field. Cancel with `Esc`.
   - **Delete**: press `d` in the detail view, then confirm with `y`
     or `Enter`.
+- **Folder view**: press `Ctrl+f` in the list to browse categories as
+  folders. `Enter` descends into a folder, `Esc` goes up one level (or
+  back to the list), `Ctrl+f` toggles back to the search list. Press
+  `d` on a folder to delete it — this deletes **all bookmarks in that
+  folder and every subfolder** (e.g. deleting `food/recipes` also
+  deletes `food/recipes/vegetarian`), after a confirmation that shows
+  how many bookmarks will be removed.
 - **Search persists**: if you search, open a detail, edit, or delete,
   going back returns to the list with your search term intact.
 - After saving an edit or add, you return to the **item overview**
@@ -86,9 +93,25 @@ automatically after import (unless `--no-tui` is given).
   Emacs-style: `Ctrl+n`/`Ctrl+p` move down/up.
 - `Enter` opens the selected bookmark's URL in the browser and quits.
 - `Ctrl+o` opens the **detail view**.
+- `Ctrl+f` switches to the **folder view**.
 - `Ctrl+a` or `Tab` opens the **add** form.
 - `Esc` first clears the search query, then quits.
 - `Ctrl+c` quits immediately.
+
+### Folder view
+
+Categories are browsed as folders, one level at a time. Each row shows
+the folder name and how many bookmarks it contains (including
+subfolders).
+
+- `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`, `Ctrl+n`/`Ctrl+p`) move the
+  selection.
+- `Enter` descends into the selected folder.
+- `d` deletes the selected folder: **all bookmarks in it and in every
+  subfolder** are deleted, after a confirmation showing the count.
+- `Ctrl+a` or `Tab` opens the **add** form.
+- `Ctrl+f` switches back to the search list.
+- `Esc` goes up one level (or back to the search list at the top).
 
 ### Detail view
 

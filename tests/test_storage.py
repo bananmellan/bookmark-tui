@@ -193,3 +193,60 @@ def test_dangling_symlink_creates_target(tmp_path):
     assert link.is_symlink()
     assert real.exists()
     assert [b.url for b in BookmarkStore(link).all] == ["https://a.com"]
+
+
+# ------------------------------------------------------------ delete_category
+
+
+def test_in_category_exact_and_subcategories(tmp_path):
+    from bookmark_tui.storage import BookmarkStore
+    from bookmark_tui.models import Bookmark
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    mk = lambda cat: Bookmark(id=1, url="https://x.com", category=cat)
+    assert store.in_category(mk("food/recipes"), "food/recipes")
+    assert store.in_category(mk("food/recipes/vegetarian"), "food/recipes")
+    assert store.in_category(mk("food/recipes/"), "food/recipes")
+    assert not store.in_category(mk("food"), "food/recipes")
+    assert not store.in_category(mk("food2/recipes"), "food/recipes")
+    assert not store.in_category(mk(""), "food/recipes")
+    assert store.in_category(mk("food"), "food")
+    assert store.in_category(mk("food/recipes"), "food")
+
+
+def test_delete_category_removes_subcategories(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food/recipes")
+    store.add("https://b.com", "B", "food/recipes/vegetarian")
+    store.add("https://c.com", "C", "food/links")
+    store.add("https://d.com", "D", "dev")
+    store.add("https://e.com", "E", "")  # uncategorized
+    store.add("https://f.com", "F", "food2/recipes")  # must survive
+
+    deleted = store.delete_category("food/recipes")
+    assert deleted == 2
+    remaining = sorted(b.url for b in store.all)
+    assert remaining == [
+        "https://c.com", "https://d.com", "https://e.com", "https://f.com",
+    ]
+
+    # Persisted: reload and verify.
+    reloaded = BookmarkStore(tmp_path / "bookmarks.json")
+    assert sorted(b.url for b in reloaded.all) == remaining
+
+
+def test_delete_category_top_level(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food/recipes")
+    store.add("https://b.com", "B", "food")
+    store.add("https://c.com", "C", "dev/tools")
+    deleted = store.delete_category("food")
+    assert deleted == 2
+    assert [b.url for b in store.all] == ["https://c.com"]
+
+
+def test_delete_category_no_match_is_noop(tmp_path):
+    store = BookmarkStore(tmp_path / "bookmarks.json")
+    store.add("https://a.com", "A", "food")
+    deleted = store.delete_category("nonexistent")
+    assert deleted == 0
+    assert len(store.all) == 1

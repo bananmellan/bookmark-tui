@@ -8,14 +8,16 @@ The search bar is centered: as you type, the prompt stays in the
 middle of the screen.
 
 Key bindings:
-- enter: Return, Ctrl+m or Ctrl+j — open URL (in list/detail)
+- enter: Return, Ctrl+m or Ctrl+j — open URL (in list/detail),
+  descend into folder (in folder view)
 - back/quit: Esc or Ctrl+l
 - up/down: arrow keys, Ctrl+p / Ctrl+n (emacs style)
 - left/right: arrow keys (cursor movement in edit form)
 - quit: Ctrl+c
 - details: Ctrl+o (in list)
-- add: Ctrl+a or Tab (in list)
-- edit: e (in detail); delete: d (in detail)
+- add: Ctrl+a or Tab (in list and folder view)
+- edit: e (in detail); delete: d (in detail or folder view)
+- folder view: Ctrl+f (toggle, in list)
 - save: Ctrl+s or Enter on last field (in edit form)
 """
 
@@ -29,10 +31,12 @@ from .app import (
     ConfirmScreen,
     DetailScreen,
     EditScreen,
+    FolderConfirmScreen,
     ListScreen,
     OpenRequested,
     QuitRequested,
     EDIT_FIELDS,
+    category_count,
 )
 from .models import Bookmark
 
@@ -121,6 +125,8 @@ def _key_name(ch: int) -> str:
         return "ctrl_o"  # Ctrl+o: open detail view
     if ch == 19:
         return "ctrl_s"  # Ctrl+s: save
+    if ch == 6:
+        return "ctrl_f"  # Ctrl+f: toggle folder view
     if 32 <= ch < 127:
         return chr(ch)
     if 0 < ch < 32:
@@ -196,6 +202,11 @@ def _draw_list(stdscr, app: App) -> None:
 
     stdscr.erase()
 
+    if screen.folder_mode:
+        _draw_folders(stdscr, app)
+        stdscr.refresh()
+        return
+
     # Centered search bar
     prompt = f"> {screen.query}"
     _put_centered(stdscr, 0, prompt, _pair(_PAIR_PROMPT))
@@ -247,13 +258,77 @@ def _draw_list(stdscr, app: App) -> None:
     status = f"{len(visible)}/{len(screen.bookmarks)} bookmarks"
     if screen.message:
         status = f"{screen.message}  —  {status}"
-    status += "  ·  enter: open  ctrl-o: details  ctrl-a/tab: add  esc: quit"
+    status += "  ·  enter: open  ctrl-o: details  ctrl-f: folders  ctrl-a: add  esc: quit"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
 
     # Position cursor in the centered search bar
     prompt_len = len(prompt)
     cursor_x = max(0, (width - prompt_len) // 2) + prompt_len
     stdscr.move(0, min(cursor_x, width - 1))
+    stdscr.refresh()
+
+
+def _draw_folders(stdscr, app: App) -> None:
+    """Folder/category browser: one row per immediate child folder,
+    with the bookmark count for each (including subfolders)."""
+    screen = app.screen
+    assert isinstance(screen, ListScreen)
+    height, width = stdscr.getmaxyx()
+    folders = screen.folders
+    list_height = max(1, height - 1 - _LIST_TOP)
+    app._clamp(screen, list_height)
+
+    # Breadcrumb header
+    crumb = screen.folder_path or "folders"
+    _put(stdscr, 0, 0, _truncate(f"folders / {crumb}" if screen.folder_path else crumb,
+                                  width - 1), curses.A_BOLD | _pair(_PAIR_PROMPT))
+
+    sel_attr = _sel_attr()
+    if not folders:
+        hint = "no folders — ctrl-a to add a bookmark with a category"
+        _put_centered(stdscr, _LIST_TOP, hint, curses.A_DIM)
+    for row in range(list_height):
+        idx = screen.offset + row
+        if idx >= len(folders):
+            break
+        folder = folders[idx]
+        is_selected = idx == screen.selected
+        y = _LIST_TOP + row
+        name = folder.rsplit("/", 1)[-1]
+        count = category_count(screen.bookmarks, folder, app.store)
+        label = f"{name}/  ({count})"
+        if is_selected:
+            _put(stdscr, y, 0, " " * (width - 1), sel_attr)
+            _put(stdscr, y, 2, _truncate(label, width - 3), sel_attr)
+        else:
+            _put(stdscr, y, 2, _truncate(label, width - 3), _pair(_PAIR_CATEGORY))
+
+    status = f"{len(folders)} folders"
+    if screen.message:
+        status = f"{screen.message}  —  {status}"
+    status += "  ·  enter: open folder  d: delete folder  ctrl-f: list  ctrl-a: add  esc: back"
+    _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+
+
+def _draw_folder_confirm(stdscr, app: App) -> None:
+    screen = app.screen
+    assert isinstance(screen, FolderConfirmScreen)
+    height, width = stdscr.getmaxyx()
+
+    stdscr.erase()
+    _put(stdscr, 0, 0, _truncate(f"Delete folder: {screen.folder}/", width - 1), curses.A_BOLD)
+    _put(stdscr, 1, 0, _truncate(f"This deletes {screen.count} bookmark(s) in {screen.folder}/ and all subfolders.",
+                                  width - 1), _pair(_PAIR_URL))
+
+    _put(stdscr, 3, 2, "Are you sure?", curses.A_NORMAL)
+    yes_attr = curses.A_REVERSE if screen.selected == 0 else curses.A_NORMAL
+    no_attr = curses.A_REVERSE if screen.selected == 1 else curses.A_NORMAL
+    _put(stdscr, 5, 4, "Yes", yes_attr)
+    _put(stdscr, 5, 12, "No", no_attr)
+
+    if screen.message:
+        _put(stdscr, height - 2, 0, _truncate(screen.message, width - 1), _pair(_PAIR_PROMPT))
+    _put(stdscr, height - 1, 0, _truncate("enter/y: confirm  n/esc: cancel  ←→: select", width - 1), curses.A_DIM)
     stdscr.refresh()
 
 
@@ -377,6 +452,8 @@ def _loop(stdscr, app: App) -> Bookmark | None:
             _draw_edit(stdscr, app)
         elif isinstance(screen, ConfirmScreen):
             _draw_confirm(stdscr, app)
+        elif isinstance(screen, FolderConfirmScreen):
+            _draw_folder_confirm(stdscr, app)
         try:
             name = _read_key(stdscr)
         except KeyboardInterrupt:

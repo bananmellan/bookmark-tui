@@ -265,7 +265,8 @@ def test_draw_list_status_bar(tmp_path):
     text = win.text()
     assert "enter: open" in text
     assert "ctrl-o: details" in text
-    assert "ctrl-a/tab: add" in text
+    assert "ctrl-f: folders" in text
+    assert "ctrl-a: add" in text.splitlines()[-1]
 
 
 # ------------------------------------------------------------ detail rendering
@@ -600,3 +601,135 @@ def test_pty_ctrl_c_quits(tmp_path):
         except OSError:
             pass
     assert proc.returncode == 0
+
+
+# ------------------------------------------------------------ folder view rendering
+
+
+FOLDER_SAMPLE_TUI = [
+    bm(1, "GitHub", "https://github.com", "dev/tools"),
+    bm(2, "GitLab", "https://gitlab.com", "dev"),
+    bm(3, "Bank", "https://bank.example.com", "finance"),
+    bm(4, "Pasta", "https://pasta.example.com", "food/recipes"),
+    bm(5, "Cake", "https://cake.example.com", "food/recipes/vegan"),
+    bm(6, "Soup", "https://soup.example.com", "food/soups"),
+]
+
+
+def test_key_name_ctrl_f():
+    assert tui._key_name(6) == "ctrl_f"
+
+
+def test_draw_folder_view_lists_top_level(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "dev/  (2)" in text
+    assert "finance/  (1)" in text
+    assert "food/  (3)" in text
+    assert "folders" in text
+    assert "d: delete folder" in text
+
+
+def test_draw_folder_view_descend_shows_children(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("down")
+    app.handle_key("down")
+    app.handle_key("enter")  # into food
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "folders / food" in text
+    assert "recipes/  (2)" in text
+    assert "soups/  (1)" in text
+
+
+def test_draw_folder_view_marks_selected(tmp_path):
+    import curses
+
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    sel = tui._sel_attr()
+    assert win.cells[(3, 2)][1] == sel
+    assert win.cells[(3, 40)][1] == sel  # bar covers full row
+
+
+def test_draw_folder_view_empty(tmp_path):
+    app = make_app(tmp_path, [bm(1, "NoCat", "https://x.com", "")])
+    app.start()
+    app.handle_key("ctrl_f")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert "no folders" in win.text()
+
+
+def test_draw_folder_confirm(tmp_path):
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("d")
+    win = StubWindow()
+    tui._draw_folder_confirm(win, app)
+    text = win.text()
+    assert "Delete folder: dev/" in text
+    assert "2 bookmark(s)" in text
+    assert "dev/ and all subfolders" in text
+    assert "Yes" in text
+    assert "No" in text
+
+
+def test_pty_folder_view_and_delete(tmp_path):
+    """Drive the real UI: ctrl-f, descend into food, delete food/recipes,
+    confirm, verify the store lost exactly the two recipes bookmarks."""
+    store_path = tmp_path / "store.json"
+    store = BookmarkStore(store_path)
+    for b in FOLDER_SAMPLE_TUI:
+        store.add(b.url, b.title, b.category)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["BOOKMARK_TUI_STORE"] = str(store_path)
+    env["BOOKMARK_TUI_OPENED"] = str(tmp_path / "opened.txt")
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        # ctrl-f, down x2 -> food, enter -> into food, d -> delete recipes,
+        # y -> confirm, esc -> top level, esc -> search list, esc -> quit
+        for keys in (b"\x06", b"\x0e", b"\x0e", b"\r", b"d", b"y", b"\x1b", b"\x1b", b"\x1b"):
+            time.sleep(0.2)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+    store = BookmarkStore(store_path)
+    urls = sorted(b.url for b in store.all)
+    assert urls == [
+        "https://bank.example.com",
+        "https://github.com",
+        "https://gitlab.com",
+        "https://soup.example.com",
+    ]

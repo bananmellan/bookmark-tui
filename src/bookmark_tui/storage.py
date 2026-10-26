@@ -117,6 +117,26 @@ class BookmarkStore:
                 return True
         return False
 
+    def in_category(self, bm: Bookmark, category: str) -> bool:
+        """True when bm's category is `category` or any subcategory of it
+        (e.g. "food/recipes" matches "food/recipes" and
+        "food/recipes/vegetarian" but not "food" or "food2")."""
+        cat = bm.category.strip("/")
+        prefix = category.strip("/")
+        return cat == prefix or cat.startswith(prefix + "/")
+
+    def delete_category(self, category: str) -> int:
+        """Delete every bookmark in `category` or any subcategory of it.
+        Returns the number of bookmarks deleted."""
+        before = len(self._bookmarks)
+        self._bookmarks = [
+            bm for bm in self._bookmarks if not self.in_category(bm, category)
+        ]
+        deleted = before - len(self._bookmarks)
+        if deleted:
+            self._save()
+        return deleted
+
     def replace_all(self, bookmarks: list[Bookmark]) -> None:
         """Replace the entire bookmark list. Used by import."""
         self._bookmarks = list(bookmarks)
