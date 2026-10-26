@@ -131,3 +131,65 @@ def test_atomic_write_permissions(tmp_path):
     store.add("https://a.com")
     mode = os.stat(path).st_mode & 0o777
     assert mode == 0o600
+
+
+def test_symlinked_store_is_followed_not_replaced(tmp_path):
+    """A symlinked bookmarks.json (e.g. GNU stow) must survive writes:
+    the write lands in the real file and the link stays a link."""
+    import os
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "bookmarks.json"
+    real.write_text(json.dumps({"version": 1, "items": []}))
+    link = tmp_path / "bookmarks.json"
+    os.symlink(real, link)
+
+    store = BookmarkStore(link)
+    store.add("https://a.com", "A", "dev")
+
+    assert link.is_symlink(), "symlink was replaced by a regular file"
+    assert os.readlink(link) == str(real)
+    # The write went through the link into the real file.
+    reloaded = BookmarkStore(link)
+    assert [b.url for b in reloaded.all] == ["https://a.com"]
+    data = json.loads(real.read_text())
+    assert data["items"] == [
+        {"id": 1, "url": "https://a.com", "title": "A", "category": "dev"}
+    ]
+
+
+def test_symlinked_store_update_and_delete_keep_link(tmp_path):
+    import os
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "bookmarks.json"
+    real.write_text(json.dumps({"version": 1, "items": []}))
+    link = tmp_path / "bookmarks.json"
+    os.symlink(real, link)
+
+    store = BookmarkStore(link)
+    bm = store.add("https://a.com", "A", "dev")
+    store.update(bm.id, "https://b.com", "B", "dev")
+    assert link.is_symlink()
+    assert [b.url for b in BookmarkStore(link).all] == ["https://b.com"]
+    store.delete(bm.id)
+    assert link.is_symlink()
+    assert BookmarkStore(link).all == []
+
+
+def test_dangling_symlink_creates_target(tmp_path):
+    """A symlink whose target doesn't exist yet (stow not linked into
+    place) is resolved and the target file is created on first save."""
+    import os
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "bookmarks.json"
+    link = tmp_path / "bookmarks.json"
+    os.symlink(real, link)
+
+    store = BookmarkStore(link)
+    store.add("https://a.com")
+
+    assert link.is_symlink()
+    assert real.exists()
+    assert [b.url for b in BookmarkStore(link).all] == ["https://a.com"]

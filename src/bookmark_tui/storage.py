@@ -33,10 +33,16 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 class BookmarkStore:
-    """In-memory bookmark list backed by a JSON file."""
+    """In-memory bookmark list backed by a JSON file.
+
+    If the path is a symbolic link (e.g. managed by GNU stow), it is
+    resolved once at open: reads and writes go to the real file, and
+    the atomic write replaces the real file instead of clobbering the
+    link with a regular file.
+    """
 
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self.path = path.resolve()
         self._bookmarks: list[Bookmark] = []
         self._next_id = 1
         self._load()
