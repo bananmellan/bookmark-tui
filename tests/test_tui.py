@@ -783,8 +783,33 @@ def test_draw_folder_view_marks(tmp_path):
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
-    assert "* GitLab" in text
+    assert "*" in text
     assert "1 marked" in text
+
+
+def test_draw_folder_view_names_align(tmp_path):
+    """Folder and bookmark names start in the same column — the mark
+    indicator lives in column 0, not inside the label."""
+    app = make_app(tmp_path, FOLDER_SAMPLE_TUI)
+    app.start()
+    app.handle_key("ctrl_f")
+    app.handle_key("enter")  # into dev -> rows: tools/ folder, GitLab bookmark
+    app.handle_key("down")  # GitLab row
+    app.handle_key(" ")  # mark GitLab
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # tools/ is at row _LIST_TOP (3), GitLab at row 4; both names at x=2.
+    folder_name_x = next(
+        x for x in range(win.width) if win.cells.get((3, x), (" ", 0))[0] == "t"
+    )
+    bm_name_x = next(
+        x for x in range(win.width) if win.cells.get((4, x), (" ", 0))[0] == "G"
+    )
+    assert folder_name_x == bm_name_x == 2
+    # The mark indicator is in column 0 of the bookmark row.
+    assert win.cells[(4, 0)][0] == "*"
+    # And column 0 of the folder row is blank.
+    assert win.cells.get((3, 0), (" ", 0))[0] == " "
 
 
 def test_draw_folder_view_marked_count_in_status(tmp_path):

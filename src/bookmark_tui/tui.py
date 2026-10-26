@@ -307,14 +307,18 @@ def _draw_folders(stdscr, app: App) -> None:
         else:
             bm = r.bookmark
             assert bm is not None
-            mark = "*" if bm.id in screen.marks else " "
-            label = f"{mark} {r.name}"
+            label = r.name
             attr = _pair(_PAIR_TITLE)
         if is_selected:
             _put(stdscr, y, 0, " " * (width - 1), sel_attr)
             _put(stdscr, y, 2, _truncate(label, width - 3), sel_attr)
         else:
             _put(stdscr, y, 2, _truncate(label, width - 3), attr)
+        # Mark indicator lives in its own column so folder and bookmark
+        # names stay aligned.
+        if r.kind == "bookmark" and r.bookmark is not None:
+            mark_attr = sel_attr if is_selected else curses.A_BOLD | _pair(_PAIR_PROMPT)
+            _put(stdscr, y, 0, "*" if r.bookmark.id in screen.marks else " ", mark_attr)
 
     n_folders = sum(1 for r in rows if r.kind == "folder")
     status = f"{n_folders} folders"
